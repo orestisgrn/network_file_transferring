@@ -8,8 +8,9 @@
 #include <errno.h>
 #include "utils.h"
 #include "buffer_queue.h"
+#include "string.h"
 
-int worker_limit = 5;
+int worker_num = 5;
 int32_t port_number = -1;
 
 Buffer_Queue work_queue;
@@ -39,12 +40,12 @@ int main(int argc,char **argv) {
                     break;
                 case 'n':
                     wrong_char=NULL;
-                    worker_limit = strtol(*argv,&wrong_char,10);
+                    worker_num = strtol(*argv,&wrong_char,10);
                     if (*wrong_char!='\0') {
-                        CLEAN_AND_EXIT(perror("Worker limit must be int\n"),ARGS_ERR);
+                        CLEAN_AND_EXIT(perror("Worker number must be int\n"),ARGS_ERR);
                     }
-                    if (worker_limit < 1) {
-                        CLEAN_AND_EXIT(perror("Worker limit must be a positive integer\n"),ARGS_ERR);
+                    if (worker_num < 1) {
+                        CLEAN_AND_EXIT(perror("Worker number must be a positive integer\n"),ARGS_ERR);
                     }
                     break;
                 case 'p':
