@@ -1,7 +1,5 @@
 MANAGER_OBJS = nfs_manager.o buffer_queue.o
 MANAGER_OUT = nfs_manager
-WORKER_OBJS = worker.o string.o
-WORKER_OUT = worker
 CONSOLE_OBJS = fss_console.o string.o
 CONSOLE_OUT = fss_console
 SOURCE	= nfs_manager.c buffer_queue.c
