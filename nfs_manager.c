@@ -6,6 +6,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <errno.h>
+#include <ctype.h>
 #include "utils.h"
 #include "buffer_queue.h"
 #include "string.h"
@@ -120,7 +121,98 @@ int main(int argc,char **argv) {
     CLEAN_AND_EXIT( ,0);
 }
 
+int skip_white(FILE *file) {
+    int ch;
+    while(isspace(ch=fgetc(file)));
+    return ch;
+}
+
+int read_dest(FILE *config_file,String path,String addr,int32_t *port);
+
 int read_config(FILE *config_file) {
+    String source,target,source_addr,target_addr;
+    int32_t source_port,target_port;
+    do {
+        if ((source=string_create(10))==NULL)
+            return ALLOC_ERR;
+        if ((source_addr=string_create(15))==NULL) {
+            string_free(source);
+            return ALLOC_ERR;
+        }
+        int read_code=read_dest(config_file,source,source_addr,&source_port);
+        if (read_code==ALLOC_ERR) {
+            string_free(source);
+            string_free(source_addr);
+            return ALLOC_ERR;
+        }
+        if (read_code==EOF) {
+            string_free(source);
+            string_free(source_addr);
+            return 0;
+        }
+        if ((target=string_create(10))==NULL) {
+            string_free(source);
+            string_free(source_addr);
+            return ALLOC_ERR;
+        }
+        if ((target_addr=string_create(15))==NULL) {
+            string_free(target);
+            string_free(source);
+            string_free(source_addr);
+            return ALLOC_ERR;
+        }
+        read_code=read_dest(config_file,target,target_addr,&target_port);
+        if (read_code==ALLOC_ERR) {
+            string_free(source);
+            string_free(source_addr);
+            string_free(target);
+            string_free(target_addr);
+            return ALLOC_ERR;
+        }
+        if (read_code==EOF) {
+            string_free(source);
+            string_free(source_addr);
+            string_free(target);
+            string_free(target_addr);
+            return 0;
+        }
+        printf("%s@%s:%d -> %s@%s:%d\n",string_ptr(source),string_ptr(source_addr),source_port,
+                                        string_ptr(target),string_ptr(target_addr),target_port);//
+        string_free(source);//
+        string_free(source_addr);//
+        string_free(target);//
+        string_free(target_addr);//
+    } while (1);
+}
+
+int read_dest(FILE *config_file,String path,String addr,int32_t *port) {
+    int ch;
+    ch=skip_white(config_file);
+    if (ch==EOF)
+        return EOF; // assumes EOF==-1
+    while (!(isspace(ch) || ch=='@')) {  // read path
+        if (string_push(path,ch)==-1)
+            return ALLOC_ERR;
+        ch = fgetc(config_file);
+        if (ch==EOF)
+            return EOF;
+    }
+    ch = skip_white(config_file);
+    if (ch==EOF)
+        return EOF;
+    while (ch!=':') {                   // read addr
+        if (string_push(addr,ch)==-1)
+            return ALLOC_ERR;
+        ch = fgetc(config_file);
+        if (ch==EOF)
+            return EOF;
+    }
+    int scan_code=fscanf(config_file,"%d",port);
+    if (scan_code==1)
+        return 0;
+    if (scan_code==EOF)
+        return EOF;
+    *port = -1;
     return 0;
 }
 
