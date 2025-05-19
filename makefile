@@ -12,7 +12,7 @@ FLAGS = -g -c -Wall
 all: $(MANAGER_OUT) $(CONSOLE_OUT) $(CLIENT_OUT)
 
 $(MANAGER_OUT): $(MANAGER_OBJS)
-	$(CC) -g -o $(MANAGER_OUT) $(MANAGER_OBJS)
+	$(CC) -g -o $(MANAGER_OUT) $(MANAGER_OBJS) -lpthread
 
 $(CONSOLE_OUT): $(CONSOLE_OBJS)
 	$(CC) -g -o $(CONSOLE_OUT) $(CONSOLE_OBJS)
@@ -21,7 +21,7 @@ $(CLIENT_OUT): $(CLIENT_OBJS)
 	$(CC) -g -o $(CLIENT_OUT) $(CLIENT_OBJS) -lpthread
 
 nfs_manager.o: nfs_manager.c utils.h buffer_queue.h string.h
-	$(CC) $(FLAGS) nfs_manager.c
+	$(CC) $(FLAGS) nfs_manager.c -lpthread
 
 buffer_queue.o: buffer_queue.c buffer_queue.h
 	$(CC) $(FLAGS) buffer_queue.c

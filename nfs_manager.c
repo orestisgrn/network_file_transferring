@@ -7,11 +7,14 @@
 #include <netinet/in.h>
 #include <errno.h>
 #include <ctype.h>
+#include <pthread.h>
 #include "utils.h"
 #include "buffer_queue.h"
 #include "string.h"
 
 int worker_num = 5;
+pthread_t *workers;
+
 int32_t port_number = -1;
 
 Buffer_Queue work_queue;
@@ -19,6 +22,9 @@ Buffer_Queue work_queue;
 int read_config(FILE *config_file);
 
 int bind_socket(int sock,int32_t addr,uint16_t port);
+
+void *worker_thread(void *args);
+void *get_file_list(void *args);
 
 int main(int argc,char **argv) {
     char opt = '\0';
@@ -108,6 +114,14 @@ int main(int argc,char **argv) {
     if (listen(console_sock,1)==-1) {
         CLEAN_AND_EXIT(perror("Couldn't initiate listening\n"),LISTEN_ERR);
     }
+    if ((workers=malloc(worker_num*sizeof(*workers)))==NULL) {
+        CLEAN_AND_EXIT(perror("Memory allocation error\n"),ALLOC_ERR);
+    }
+    for (int i=0;i<worker_num;i++) {
+        if(pthread_create(&workers[i],NULL,worker_thread,NULL)!=0) {
+            CLEAN_AND_EXIT(perror("Thread couldn't be created\n"),PTHREAD_ERR);
+        }
+    }
     if (config!=NULL) {
         if ((config_file=fopen(config,"r"))==NULL) {
             CLEAN_AND_EXIT(perror("Config file couldn't open\n"),FOPEN_ERR);
@@ -118,6 +132,9 @@ int main(int argc,char **argv) {
         }
     }
     accept(console_sock,NULL,NULL);//
+    for (int i=0;i<worker_num;i++) {
+        pthread_join(workers[i],NULL);
+    }
     CLEAN_AND_EXIT( ,0);
 }
 
@@ -130,58 +147,101 @@ int skip_white(FILE *file) {
 int read_dest(FILE *config_file,String path,String addr,int32_t *port);
 
 int read_config(FILE *config_file) {
-    String source,target,source_addr,target_addr;
+    String source_dir,target_dir,source_addr_str,target_addr_str;
     int32_t source_port,target_port;
     do {
-        if ((source=string_create(10))==NULL)
+        if ((source_dir=string_create(10))==NULL)
             return ALLOC_ERR;
-        if ((source_addr=string_create(15))==NULL) {
-            string_free(source);
+        if ((source_addr_str=string_create(15))==NULL) {
+            string_free(source_dir);
             return ALLOC_ERR;
         }
-        int read_code=read_dest(config_file,source,source_addr,&source_port);
+        int read_code=read_dest(config_file,source_dir,source_addr_str,&source_port);
         if (read_code==ALLOC_ERR) {
-            string_free(source);
-            string_free(source_addr);
+            string_free(source_dir);
+            string_free(source_addr_str);
             return ALLOC_ERR;
         }
         if (read_code==EOF) {
-            string_free(source);
-            string_free(source_addr);
+            string_free(source_dir);
+            string_free(source_addr_str);
             return 0;
         }
-        if ((target=string_create(10))==NULL) {
-            string_free(source);
-            string_free(source_addr);
+        if ((target_dir=string_create(10))==NULL) {
+            string_free(source_dir);
+            string_free(source_addr_str);
             return ALLOC_ERR;
         }
-        if ((target_addr=string_create(15))==NULL) {
-            string_free(target);
-            string_free(source);
-            string_free(source_addr);
+        if ((target_addr_str=string_create(15))==NULL) {
+            string_free(target_dir);
+            string_free(source_dir);
+            string_free(source_addr_str);
             return ALLOC_ERR;
         }
-        read_code=read_dest(config_file,target,target_addr,&target_port);
+        read_code=read_dest(config_file,target_dir,target_addr_str,&target_port);
         if (read_code==ALLOC_ERR) {
-            string_free(source);
-            string_free(source_addr);
-            string_free(target);
-            string_free(target_addr);
+            string_free(source_dir);
+            string_free(source_addr_str);
+            string_free(target_dir);
+            string_free(target_addr_str);
             return ALLOC_ERR;
         }
         if (read_code==EOF) {
-            string_free(source);
-            string_free(source_addr);
-            string_free(target);
-            string_free(target_addr);
+            string_free(source_dir);
+            string_free(source_addr_str);
+            string_free(target_dir);
+            string_free(target_addr_str);
             return 0;
         }
-        printf("%s@%s:%d -> %s@%s:%d\n",string_ptr(source),string_ptr(source_addr),source_port,
-                                        string_ptr(target),string_ptr(target_addr),target_port);//
-        string_free(source);//
-        string_free(source_addr);//
-        string_free(target);//
-        string_free(target_addr);//
+        /* Checks validity of records */
+        enum {SOURCE,TARGET};
+        struct sockaddr_in *sock_tuple;
+        if ((sock_tuple=malloc(2*sizeof(struct sockaddr_in)))==NULL) {
+            string_free(source_dir);
+            string_free(source_addr_str);
+            string_free(target_dir);
+            string_free(target_addr_str);
+            return ALLOC_ERR;
+        }
+        if (string_pos(source_dir,0)!='/' || string_pos(target_dir,0)!='/' || 
+            source_port==-1 || target_port==-1 || 
+            inet_aton(string_ptr(source_addr_str),&sock_tuple[SOURCE].sin_addr)==0 ||
+            inet_aton(string_ptr(target_addr_str),&sock_tuple[TARGET].sin_addr)==0) {
+            printf("Skipped %s\n",string_ptr(source_dir));//
+            string_free(source_dir);
+            string_free(source_addr_str);
+            string_free(target_dir);
+            string_free(target_addr_str);
+            free(sock_tuple);
+            continue;
+        }
+        sock_tuple[SOURCE].sin_family=AF_INET;
+        sock_tuple[TARGET].sin_family=AF_INET;
+        sock_tuple[SOURCE].sin_port=htons(source_port);
+        sock_tuple[TARGET].sin_port=htons(target_port);
+        /*                              */
+        pthread_t thr;
+        if (pthread_create(&thr,NULL,get_file_list,sock_tuple)!=0) {
+            string_free(source_dir);
+            string_free(source_addr_str);
+            string_free(target_dir);
+            string_free(target_addr_str);
+            free(sock_tuple);
+            return PTHREAD_ERR;
+        }
+        if (pthread_detach(thr)!=0) {
+            string_free(source_dir);
+            string_free(source_addr_str);
+            string_free(target_dir);
+            string_free(target_addr_str);
+            return PTHREAD_ERR;
+        }
+        printf("%s@%s:%d -> %s@%s:%d\n",string_ptr(source_dir),string_ptr(source_addr_str),source_port,
+                                        string_ptr(target_dir),string_ptr(target_addr_str),target_port);//
+        string_free(source_dir);//
+        string_free(source_addr_str);//
+        string_free(target_dir);//
+        string_free(target_addr_str);//
     } while (1);
 }
 
@@ -193,7 +253,7 @@ int read_dest(FILE *config_file,String path,String addr,int32_t *port) {
     while (ch!='@') {                   // read path
         if (string_push(path,ch)==-1)
             return ALLOC_ERR;
-        ch = fgetc(config_file);
+        ch = skip_white(config_file);
         if (ch==EOF)
             return EOF;
     }
@@ -201,9 +261,9 @@ int read_dest(FILE *config_file,String path,String addr,int32_t *port) {
     if (ch==EOF)
         return EOF;
     while (ch!=':') {                   // read addr
-        if (string_push(addr,ch)==-1)   // check if inet_aton works with spaces inbetween
+        if (string_push(addr,ch)==-1)
             return ALLOC_ERR;
-        ch = fgetc(config_file);
+        ch = skip_white(config_file);
         if (ch==EOF)
             return EOF;
     }
@@ -222,4 +282,15 @@ int bind_socket(int sock,int32_t addr,uint16_t port) {
     str.sin_addr.s_addr=addr;
     str.sin_port=port;
     return bind(sock,(struct sockaddr *) &str,sizeof(str));
+}
+
+void *worker_thread(void *args) {
+    return NULL;
+}
+
+void *get_file_list(void *args) {
+    enum {SOURCE,TARGET};
+    struct sockaddr_in *sock_tuple=args;
+    free(sock_tuple);
+    return NULL;
 }
