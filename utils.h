@@ -6,6 +6,8 @@ enum return_codes {
     USED_ADDR,
     BIND_ERR,
     LISTEN_ERR,
+    ACCEPT_ERR,
+    PTHREAD_ERR,
 };
 
 #define CLEAN_AND_EXIT(PRINT_CMD,RETURN_CODE) { \

@@ -113,7 +113,7 @@ int main(int argc,char **argv) {
             CLEAN_AND_EXIT(perror("Config file couldn't open\n"),FOPEN_ERR);
         }
         int code;/*   read_config reads config and also inserts its records on sync_info_mem_store   */
-        if ((code=read_config(config_file))!=0) {
+        if ((code=read_config(config_file))!=0) {   // maybe execute this in a thread
             CLEAN_AND_EXIT(perror("Error while reading config file\n"),code);
         }
     }
@@ -189,8 +189,8 @@ int read_dest(FILE *config_file,String path,String addr,int32_t *port) {
     int ch;
     ch=skip_white(config_file);
     if (ch==EOF)
-        return EOF; // assumes EOF==-1
-    while (!(isspace(ch) || ch=='@')) {  // read path
+        return EOF; // assumes EOF is negative
+    while (ch!='@') {                   // read path
         if (string_push(path,ch)==-1)
             return ALLOC_ERR;
         ch = fgetc(config_file);
@@ -201,7 +201,7 @@ int read_dest(FILE *config_file,String path,String addr,int32_t *port) {
     if (ch==EOF)
         return EOF;
     while (ch!=':') {                   // read addr
-        if (string_push(addr,ch)==-1)
+        if (string_push(addr,ch)==-1)   // check if inet_aton works with spaces inbetween
             return ALLOC_ERR;
         ch = fgetc(config_file);
         if (ch==EOF)
