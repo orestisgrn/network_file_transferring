@@ -10,6 +10,8 @@
 #include "utils.h"
 #include "string.h"
 
+int retval;
+
 int bind_socket(int sock,int32_t addr,uint16_t port);
 void *connection_thread(void *void_fd);
 
@@ -73,22 +75,27 @@ int main(int argc, char **argv) {
     socklen_t managerlen=sizeof(manager);//
     while (1) {
         if ((fd=malloc(sizeof(int)))==NULL) {
-            perror("Memory allocation error\n");
-            return ALLOC_ERR;
+            perror("Memory allocation error\n");    // Think about printing this...
+            retval=ALLOC_ERR;
+            pthread_exit(&retval);
         }
         if ((*fd=accept(client_sock,(struct sockaddr *) &manager,&managerlen))==-1) {
             perror("Error on accept\n");
-            return ACCEPT_ERR;
+            retval=ACCEPT_ERR;
+            pthread_exit(&retval);
         }
         printf("%s %d\n",inet_ntoa(manager.sin_addr),ntohs(manager.sin_port));// no synchro
         pthread_t thr;
         if (pthread_create(&thr,NULL,connection_thread,fd)!=0) {
             perror("Thread couldn't be created\n");
-            return PTHREAD_ERR;
+            retval=PTHREAD_ERR;
+            pthread_exit(&retval);
         }
+        printf("Created thread\n");// no synchro
         if (pthread_detach(thr)!=0) {
             perror("Thread couldn't be detached\n");
-            return PTHREAD_ERR;
+            retval=PTHREAD_ERR;
+            pthread_exit(&retval);
         }
     }
 }
@@ -103,24 +110,30 @@ int bind_socket(int sock,int32_t addr,uint16_t port) {
 
 void *connection_thread(void *void_fd) {
     int *fd = void_fd;
-    String msg = string_create(15);
-    if (msg==NULL) {
-        perror("Memory allocation error\n");
-        exit(ALLOC_ERR);
-    }
     char ch;
     while(1) {
-        if (read(*fd,&ch,sizeof(ch))<1)
-            break;
-        if (ch=='\n')
-            break;
-        if (string_push(msg,ch)==-1) {
-            string_free(msg);
-            exit(ALLOC_ERR);
+        String msg = string_create(15);
+        if (msg==NULL) {
+            perror("Memory allocation error\n");// no synchro
+            free(fd);
+            return NULL;   // Think about how to handle in-thread errors
         }
+        while(1) {
+            if (read(*fd,&ch,sizeof(ch))<1) {
+                string_free(msg);
+                free(fd);
+                printf("Finished\n");// no synchro
+                return NULL;
+            }
+            if (ch=='\n')
+                break;
+            if (string_push(msg,ch)==-1) {
+                string_free(msg);
+                free(fd);
+                return NULL;
+            }
+        }
+        printf("%s\n",string_ptr(msg)); // no synchro
+        string_free(msg);
     }
-    printf("%s\n",string_ptr(msg)); // no synchro
-    string_free(msg);
-    free(fd);
-    return NULL;
 }
