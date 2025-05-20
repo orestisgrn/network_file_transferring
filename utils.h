@@ -10,10 +10,10 @@ enum return_codes {
     PTHREAD_ERR,
 };
 
-#define CLEAN_AND_EXIT(PRINT_CMD,RETURN_CODE) { \
+#define CLEAN_AND_EXIT(PRINT_CMD,RETURN_CMD) { \
     buffer_queue_free(work_queue); \
     free(workers); \
     if (config_file != NULL) fclose(config_file); \
     PRINT_CMD; \
-    return RETURN_CODE; \
+    RETURN_CMD; \
 }

@@ -8,12 +8,16 @@
 #include <errno.h>
 #include <ctype.h>
 #include <pthread.h>
+#include <unistd.h>
 #include "utils.h"
 #include "buffer_queue.h"
 #include "string.h"
 
 int worker_num = 5;
+int running_workers=0;  // maybe running threads? (for all threads)
 pthread_t *workers;
+
+int retval;
 
 int32_t port_number = -1;
 
@@ -24,7 +28,13 @@ int read_config(FILE *config_file);
 int bind_socket(int sock,int32_t addr,uint16_t port);
 
 void *worker_thread(void *args);
-void *get_file_list(void *args);
+
+void *get_file_list(void *void_args);
+struct get_file_list_args {
+    struct sockaddr_in sock_tuple[2];
+    String source_dir;
+};
+
 
 int main(int argc,char **argv) {
     char opt = '\0';
@@ -49,93 +59,93 @@ int main(int argc,char **argv) {
                     wrong_char=NULL;
                     worker_num = strtol(*argv,&wrong_char,10);
                     if (*wrong_char!='\0') {
-                        CLEAN_AND_EXIT(perror("Worker number must be int\n"),ARGS_ERR);
+                        CLEAN_AND_EXIT(perror("Worker number must be int\n"),return ARGS_ERR);
                     }
                     if (worker_num < 1) {
-                        CLEAN_AND_EXIT(perror("Worker number must be a positive integer\n"),ARGS_ERR);
+                        CLEAN_AND_EXIT(perror("Worker number must be a positive integer\n"),return ARGS_ERR);
                     }
                     break;
                 case 'p':
                     wrong_char=NULL;
                     port_number = strtol(*argv,&wrong_char,10);
                     if (*wrong_char!='\0') {
-                        CLEAN_AND_EXIT(perror("Port number must be int\n"),ARGS_ERR);
+                        CLEAN_AND_EXIT(perror("Port number must be int\n"),return ARGS_ERR);
                     }
                     if (port_number < 0 || port_number > 1 << 16) {
-                        CLEAN_AND_EXIT(perror("Port number must be a 16-bit integer\n"),ARGS_ERR);
+                        CLEAN_AND_EXIT(perror("Port number must be a 16-bit integer\n"),return ARGS_ERR);
                     }
                     break;
                 case 'b':
                     wrong_char=NULL;
                     buffer_size = strtol(*argv,&wrong_char,10);
                     if (*wrong_char!='\0') {
-                        CLEAN_AND_EXIT(perror("Port number must be int\n"),ARGS_ERR);
+                        CLEAN_AND_EXIT(perror("Port number must be int\n"),return ARGS_ERR);
                     }
                     if (buffer_size < 1) {
-                        CLEAN_AND_EXIT(perror("Buffer size must be a positive integer\n"),ARGS_ERR);
+                        CLEAN_AND_EXIT(perror("Buffer size must be a positive integer\n"),return ARGS_ERR);
                     }
                     break;
                 case '\0':
-                    CLEAN_AND_EXIT(perror("Argument without option\n"),ARGS_ERR);
+                    CLEAN_AND_EXIT(perror("Argument without option\n"),return ARGS_ERR);
                 default:
-                    CLEAN_AND_EXIT(fprintf(stderr,"-%c is not an option\n",opt),ARGS_ERR);
+                    CLEAN_AND_EXIT(fprintf(stderr,"-%c is not an option\n",opt),return ARGS_ERR);
             }
             opt = 0;
         }
     }
     if (logname==NULL) {
-        CLEAN_AND_EXIT(perror("No logfile given\n"),ARGS_ERR);
+        CLEAN_AND_EXIT(perror("No logfile given\n"),return ARGS_ERR);
     }
     if (buffer_size==0) {
-        CLEAN_AND_EXIT(perror("No buffer size given\n"),ARGS_ERR);
+        CLEAN_AND_EXIT(perror("No buffer size given\n"),return ARGS_ERR);
     }
     if (port_number==-1) {
-        CLEAN_AND_EXIT(perror("No port number given\n"),ARGS_ERR);
+        CLEAN_AND_EXIT(perror("No port number given\n"),return ARGS_ERR);
     }
     if (opt != '\0') {
-        CLEAN_AND_EXIT(perror("Option without argument\n"),ARGS_ERR);
+        CLEAN_AND_EXIT(perror("Option without argument\n"),return ARGS_ERR);
     }
     work_queue = buffer_queue_create(buffer_size);
     if (work_queue==NULL) {
-        CLEAN_AND_EXIT(perror("Memory allocation error\n"),ALLOC_ERR);
+        CLEAN_AND_EXIT(perror("Memory allocation error\n"),return ALLOC_ERR);
     }
     int console_sock=socket(AF_INET,SOCK_STREAM,0);
     if (console_sock==-1) {
-        CLEAN_AND_EXIT(perror("Socket couldn't be created\n"),SOCK_ERR);
+        CLEAN_AND_EXIT(perror("Socket couldn't be created\n"),return SOCK_ERR);
     }
     if (bind_socket(console_sock,htonl(INADDR_ANY),htons(port_number))==-1) {
         if (errno==EADDRINUSE) {
-            CLEAN_AND_EXIT(perror("Address already in use\n"),USED_ADDR);
+            CLEAN_AND_EXIT(perror("Address already in use\n"),return USED_ADDR);
         }
         else {
-            CLEAN_AND_EXIT(perror("Couldn't bind socket\n"),BIND_ERR);
+            CLEAN_AND_EXIT(perror("Couldn't bind socket\n"),return BIND_ERR);
         }
     }
     if (listen(console_sock,1)==-1) {
-        CLEAN_AND_EXIT(perror("Couldn't initiate listening\n"),LISTEN_ERR);
+        CLEAN_AND_EXIT(perror("Couldn't initiate listening\n"),return LISTEN_ERR);
     }
     if ((workers=malloc(worker_num*sizeof(*workers)))==NULL) {
-        CLEAN_AND_EXIT(perror("Memory allocation error\n"),ALLOC_ERR);
+        CLEAN_AND_EXIT(perror("Memory allocation error\n"),return ALLOC_ERR);
     }
     for (int i=0;i<worker_num;i++) {
         if(pthread_create(&workers[i],NULL,worker_thread,NULL)!=0) {
-            CLEAN_AND_EXIT(perror("Thread couldn't be created\n"),PTHREAD_ERR);
+            CLEAN_AND_EXIT(perror("Thread couldn't be created\n"),return PTHREAD_ERR);
         }
     }
     if (config!=NULL) {
         if ((config_file=fopen(config,"r"))==NULL) {
-            CLEAN_AND_EXIT(perror("Config file couldn't open\n"),FOPEN_ERR);
+            CLEAN_AND_EXIT(perror("Config file couldn't open\n"),return FOPEN_ERR);
         }
         int code;/*   read_config reads config and also inserts its records on sync_info_mem_store   */
         if ((code=read_config(config_file))!=0) {   // maybe execute this in a thread
-            CLEAN_AND_EXIT(perror("Error while reading config file\n"),code);
+            CLEAN_AND_EXIT(perror("Error while reading config file\n"),return code);
         }
     }
     accept(console_sock,NULL,NULL);//
-    for (int i=0;i<worker_num;i++) {
+    for (int i=0;i<worker_num;i++) {    // See how to handle pool later...
         pthread_join(workers[i],NULL);
     }
-    CLEAN_AND_EXIT( ,0);
+    CLEAN_AND_EXIT( ,{retval=0;pthread_exit(&retval);});
 }
 
 int skip_white(FILE *file) {
@@ -195,8 +205,8 @@ int read_config(FILE *config_file) {
         }
         /* Checks validity of records */
         enum {SOURCE,TARGET};
-        struct sockaddr_in *sock_tuple;
-        if ((sock_tuple=malloc(2*sizeof(struct sockaddr_in)))==NULL) {
+        struct get_file_list_args *args;
+        if ((args=malloc(sizeof(struct get_file_list_args)))==NULL) {
             string_free(source_dir);
             string_free(source_addr_str);
             string_free(target_dir);
@@ -205,28 +215,31 @@ int read_config(FILE *config_file) {
         }
         if (string_pos(source_dir,0)!='/' || string_pos(target_dir,0)!='/' || 
             source_port==-1 || target_port==-1 || 
-            inet_aton(string_ptr(source_addr_str),&sock_tuple[SOURCE].sin_addr)==0 ||
-            inet_aton(string_ptr(target_addr_str),&sock_tuple[TARGET].sin_addr)==0) {
+            inet_aton(string_ptr(source_addr_str),&args->sock_tuple[SOURCE].sin_addr)==0 ||
+            inet_aton(string_ptr(target_addr_str),&args->sock_tuple[TARGET].sin_addr)==0) {
             printf("Skipped %s\n",string_ptr(source_dir));//
             string_free(source_dir);
             string_free(source_addr_str);
             string_free(target_dir);
             string_free(target_addr_str);
-            free(sock_tuple);
+            free(args);
             continue;
         }
-        sock_tuple[SOURCE].sin_family=AF_INET;
-        sock_tuple[TARGET].sin_family=AF_INET;
-        sock_tuple[SOURCE].sin_port=htons(source_port);
-        sock_tuple[TARGET].sin_port=htons(target_port);
+        args->sock_tuple[SOURCE].sin_family=AF_INET;
+        args->sock_tuple[TARGET].sin_family=AF_INET;
+        args->sock_tuple[SOURCE].sin_port=htons(source_port);
+        args->sock_tuple[TARGET].sin_port=htons(target_port);
+        args->source_dir=source_dir;
         /*                              */
+        printf("%s@%s:%d -> %s@%s:%d\n",string_ptr(source_dir),string_ptr(source_addr_str),source_port,
+                                        string_ptr(target_dir),string_ptr(target_addr_str),target_port);//
         pthread_t thr;
-        if (pthread_create(&thr,NULL,get_file_list,sock_tuple)!=0) {
+        if (pthread_create(&thr,NULL,get_file_list,args)!=0) {
             string_free(source_dir);
             string_free(source_addr_str);
             string_free(target_dir);
             string_free(target_addr_str);
-            free(sock_tuple);
+            free(args);
             return PTHREAD_ERR;
         }
         if (pthread_detach(thr)!=0) {
@@ -234,13 +247,12 @@ int read_config(FILE *config_file) {
             string_free(source_addr_str);
             string_free(target_dir);
             string_free(target_addr_str);
+            pthread_join(thr,NULL);
             return PTHREAD_ERR;
         }
-        printf("%s@%s:%d -> %s@%s:%d\n",string_ptr(source_dir),string_ptr(source_addr_str),source_port,
-                                        string_ptr(target_dir),string_ptr(target_addr_str),target_port);//
-        string_free(source_dir);//
+        //string_free(source_dir);  // freed by get_file_list thread (for now)
         string_free(source_addr_str);//
-        string_free(target_dir);//
+        string_free(target_dir);
         string_free(target_addr_str);//
     } while (1);
 }
@@ -288,9 +300,27 @@ void *worker_thread(void *args) {
     return NULL;
 }
 
-void *get_file_list(void *args) {
+void *get_file_list(void *void_args) {
     enum {SOURCE,TARGET};
-    struct sockaddr_in *sock_tuple=args;
-    free(sock_tuple);
+    struct get_file_list_args *args=void_args;
+    int sockfd=socket(AF_INET,SOCK_STREAM,0);
+    if (sockfd==-1) {
+        perror("Socket couldn't be created\n");//
+        string_free(args->source_dir);
+        free(args);
+        return NULL;
+    }       // think about using non-blocking connect
+    if (connect(sockfd,(struct sockaddr *) &args->sock_tuple[SOURCE],sizeof(args->sock_tuple[SOURCE]))==-1) {
+        perror("Connection couldn't be made\n");//
+        string_free(args->source_dir);
+        free(args);
+        return NULL;
+    }
+    char list[] = "LIST ";
+    write(sockfd,list,sizeof(list)-1);
+    write(sockfd,string_ptr(args->source_dir),string_length(args->source_dir));
+    close(sockfd);
+    string_free(args->source_dir);
+    free(args);
     return NULL;
 }

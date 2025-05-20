@@ -7,6 +7,10 @@
 #include <errno.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <string.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 #include "utils.h"
 #include "string.h"
 
@@ -111,29 +115,51 @@ int bind_socket(int sock,int32_t addr,uint16_t port) {
 void *connection_thread(void *void_fd) {
     int *fd = void_fd;
     char ch;
-    while(1) {
-        String msg = string_create(15);
-        if (msg==NULL) {
-            perror("Memory allocation error\n");// no synchro
-            free(fd);
-            return NULL;   // Think about how to handle in-thread errors
-        }
-        while(1) {
-            if (read(*fd,&ch,sizeof(ch))<1) {
-                string_free(msg);
-                free(fd);
-                printf("Finished\n");// no synchro
-                return NULL;
-            }
-            if (ch=='\n')
-                break;
-            if (string_push(msg,ch)==-1) {
-                string_free(msg);
-                free(fd);
-                return NULL;
-            }
-        }
-        printf("%s\n",string_ptr(msg)); // no synchro
-        string_free(msg);
+    String msg = string_create(15);
+    if (msg==NULL) {
+        perror("Memory allocation error\n");// no synchro
+        free(fd);
+        return NULL;   // Think about how to handle in-thread errors
     }
+    while(read(*fd,&ch,sizeof(ch))>0) {
+        if (string_push(msg,ch)==-1) {
+            perror("Memory allocation error\n");
+            string_free(msg);
+            free(fd);
+            return NULL;
+        }
+    }
+    if (string_pos(msg,5)!='/') {   // maybe too much checking...
+        string_free(msg);
+        free(fd);
+        return NULL;
+    }
+    const char *path=string_ptr(msg)+6;
+    if (strncmp(string_ptr(msg),"LIST",4)==0) {
+        DIR *dir_ptr=opendir(path);         // iterate through files
+        printf("%s\n",path);
+        if (dir_ptr!=NULL) {
+            struct dirent *direntp;
+            int dir_fd = dirfd(dir_ptr);
+            while ((direntp=readdir(dir_ptr))!=NULL) {
+                struct stat st;
+                fstatat(dir_fd,direntp->d_name,&st,0);
+                if (S_ISREG(st.st_mode))
+                    printf("%s\n",direntp->d_name);
+            }
+        }
+        printf(".\n");
+        closedir(dir_ptr);
+    }
+    else if (strncmp(string_ptr(msg),"PUSH",4)==0) {
+        printf("%s\n",string_ptr(msg)); // no synchro
+    }
+    else if (strncmp(string_ptr(msg),"PULL",4)==0) {
+        printf("%s\n",string_ptr(msg)); // no synchro
+    }
+    else
+        printf("Invalid command\n"); // no synchro
+    string_free(msg);
+    free(fd);
+    return NULL;
 }
