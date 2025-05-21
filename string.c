@@ -46,7 +46,7 @@ int string_push(String s,char data) {   // Maybe don't set s->arr as realloc imm
     return 0;
 }
 
-int string_cpy(String s,char *src) {
+int string_cpy(String s,const char *src) {
     while(*src!='\0') {
         if (string_push(s,*(src++))==-1)
             return -1;

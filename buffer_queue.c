@@ -34,7 +34,7 @@ Buffer_Queue buffer_queue_create(int size) {
 
 void buffer_queue_push(Buffer_Queue q,struct work_record *rec) {
     pthread_mutex_lock(&q->mutex);
-    while (q->count==q->size)       // maybe >= like in example?
+    while (q->count==q->size)
         pthread_cond_wait(&q->nonfull,&q->mutex);
     q->end=(q->end+1)%q->size;
     q->buffer[q->end]=rec;

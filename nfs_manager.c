@@ -248,7 +248,6 @@ int read_config(FILE *config_file) {
         rec->sock_tuple[TARGET].sin_port=htons(target_port);
         rec->source_dir=source_dir;
         rec->target_dir=target_dir;
-        rec->file=NULL;
         /*                              */
         printf("%s@%s:%d -> %s@%s:%d\n",string_ptr(source_dir),string_ptr(source_addr_str),source_port,
                                         string_ptr(target_dir),string_ptr(target_addr_str),target_port);//
@@ -296,6 +295,8 @@ int bind_socket(int sock,int32_t addr,uint16_t port) {
     str.sin_port=port;
     return bind(sock,(struct sockaddr *) &str,sizeof(str));
 }
+
+String build_path(const char *source,const char *target);
 
 void *get_file_list(void *args) {
     enum {SOURCE,TARGET};
@@ -365,13 +366,22 @@ void *get_file_list(void *args) {
             }
             file_rec->sock_tuple[SOURCE]=rec->sock_tuple[SOURCE];   // maybe also make it reference
             file_rec->sock_tuple[TARGET]=rec->sock_tuple[TARGET];
-            file_rec->source_dir=rec->source_dir;
-            file_rec->target_dir=rec->target_dir;
-            file_rec->file=file;
+            file_rec->source_dir=build_path(string_ptr(rec->source_dir),string_ptr(file));
+            file_rec->target_dir=build_path(string_ptr(rec->target_dir),string_ptr(file));
+            string_free(file);
+            if (file_rec->source_dir==NULL || file_rec->target_dir==NULL) {
+                perror("Memory allocation error\n");
+                string_free(file_rec->source_dir);
+                string_free(file_rec->target_dir);
+                string_free(rec->source_dir);
+                string_free(rec->target_dir);
+                free(rec);
+                return NULL;
+            }
             buffer_queue_push(work_queue,file_rec);
         }
-        string_free(rec->source_dir);// just for now
-        string_free(rec->target_dir);//
+        string_free(rec->source_dir);
+        string_free(rec->target_dir);
         close(sockfd);
         free(rec);//
     }
@@ -381,9 +391,29 @@ void *get_file_list(void *args) {
 void *worker_thread(void *args) {
     struct work_record *rec;
     while ((rec=buffer_queue_pop(work_queue))!=NULL) {
-        printf("%s\n",string_ptr(rec->file));
-        string_free(rec->file);
+        printf("%s\n",string_ptr(rec->source_dir));
+        string_free(rec->source_dir);
+        string_free(rec->target_dir);
         free(rec);
     }
     return NULL;
+}
+
+String build_path(const char *source,const char *target) {
+    String path = string_create(10);
+    if (path==NULL)
+        return NULL;
+    if (string_cpy(path,source)==-1) {
+        string_free(path);
+        return NULL;
+    }
+    if (string_push(path,'/')==-1) {
+        string_free(path);
+        return NULL;
+    }
+    if (string_cpy(path,target)==-1) {
+        string_free(path);
+        return NULL;
+    }
+    return path;
 }

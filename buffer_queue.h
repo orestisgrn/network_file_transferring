@@ -7,7 +7,6 @@ struct work_record {
     struct sockaddr_in sock_tuple[2];
     String source_dir;
     String target_dir;
-    String file;
 };
 
 Buffer_Queue buffer_queue_create(int size);
