@@ -3,7 +3,7 @@
 #include "buffer_queue.h"
 
 struct buffer_queue {
-    struct work_record *buffer;
+    struct work_record **buffer;
     int start;
     int end;
     int count;
@@ -17,7 +17,7 @@ Buffer_Queue buffer_queue_create(int size) {
     Buffer_Queue q = malloc(sizeof(struct buffer_queue));
     if (q==NULL)
         return NULL;
-    q->buffer = malloc(size*sizeof(struct work_record));
+    q->buffer = malloc(size*sizeof(struct work_record*));
     if (q->buffer==NULL) {
         free(q);
         return NULL;
@@ -37,17 +37,17 @@ void buffer_queue_push(Buffer_Queue q,struct work_record *rec) {
     while (q->count==q->size)       // maybe >= like in example?
         pthread_cond_wait(&q->nonfull,&q->mutex);
     q->end=(q->end+1)%q->size;
-    q->buffer[q->end]=*rec;
+    q->buffer[q->end]=rec;
     q->count++;
     pthread_mutex_unlock(&q->mutex);
     pthread_cond_signal(&q->nonempty);
 }
 
-struct work_record buffer_queue_pop(Buffer_Queue q) {
+struct work_record *buffer_queue_pop(Buffer_Queue q) {
     pthread_mutex_lock(&q->mutex);
     while (q->count==0)
         pthread_cond_wait(&q->nonempty,&q->mutex);
-    struct work_record retval;
+    struct work_record *retval;
     retval=q->buffer[q->start];
     q->start=(q->start+1)%q->size;
     q->count--;

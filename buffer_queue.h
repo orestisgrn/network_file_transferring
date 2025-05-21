@@ -12,5 +12,5 @@ struct work_record {
 
 Buffer_Queue buffer_queue_create(int size);
 void buffer_queue_push(Buffer_Queue q,struct work_record *rec);
-struct work_record buffer_queue_pop(Buffer_Queue q);
+struct work_record *buffer_queue_pop(Buffer_Queue q);
 void buffer_queue_free(Buffer_Queue q);

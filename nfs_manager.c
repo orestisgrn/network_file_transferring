@@ -15,30 +15,22 @@
 #include "string.h"
 
 int worker_num = 5;
-int running_workers=0;  // maybe running threads? (for all threads)
 pthread_t *workers;
+pthread_t *file_producers;
 
-pthread_mutex_t mutex=PTHREAD_MUTEX_INITIALIZER;
-
-int retval;
+#define FILE_PRODUCER_NUM ((worker_num+1)/2)
 
 int32_t port_number = -1;
 
 Buffer_Queue work_queue;
+Buffer_Queue producers_queue;
 
 int read_config(FILE *config_file);
 
 int bind_socket(int sock,int32_t addr,uint16_t port);
 
 void *worker_thread(void *args);
-
-void *get_file_list(void *void_args);
-struct get_file_list_args {
-    struct sockaddr_in sock_tuple[2];
-    String source_dir;
-    String target_dir;
-};
-
+void *get_file_list(void *args);
 
 int main(int argc,char **argv) {
     char opt = '\0';
@@ -113,6 +105,10 @@ int main(int argc,char **argv) {
     if (work_queue==NULL) {
         CLEAN_AND_EXIT(perror("Memory allocation error\n"),return ALLOC_ERR);
     }
+    producers_queue = buffer_queue_create((buffer_size+1)/2);
+    if (producers_queue==NULL) {
+        CLEAN_AND_EXIT(perror("Memory allocation error\n"),return ALLOC_ERR);
+    }
     int console_sock=socket(AF_INET,SOCK_STREAM,0);
     if (console_sock==-1) {
         CLEAN_AND_EXIT(perror("Socket couldn't be created\n"),return SOCK_ERR);
@@ -136,6 +132,14 @@ int main(int argc,char **argv) {
             CLEAN_AND_EXIT(perror("Thread couldn't be created\n"),return PTHREAD_ERR);
         }
     }
+    if ((file_producers=malloc(FILE_PRODUCER_NUM*sizeof(*file_producers)))==NULL) {
+        CLEAN_AND_EXIT(perror("Memory allocation error\n"),return ALLOC_ERR);
+    }
+    for (int i=0;i<FILE_PRODUCER_NUM;i++) {
+        if(pthread_create(&file_producers[i],NULL,get_file_list,NULL)!=0) {
+            CLEAN_AND_EXIT(perror("Thread couldn't be created\n"),return PTHREAD_ERR);
+        }
+    }
     if (config!=NULL) {
         if ((config_file=fopen(config,"r"))==NULL) {
             CLEAN_AND_EXIT(perror("Config file couldn't open\n"),return FOPEN_ERR);
@@ -146,10 +150,19 @@ int main(int argc,char **argv) {
         }
     }
     accept(console_sock,NULL,NULL);//
-    for (int i=0;i<worker_num;i++) {    // See how to handle pool later...
+    for (int i=0;i<FILE_PRODUCER_NUM;i++) {
+        buffer_queue_push(producers_queue,NULL); // poison pill
+    }
+    for (int i=0;i<FILE_PRODUCER_NUM;i++) {
+        pthread_join(file_producers[i],NULL);
+    }
+    for (int i=0;i<worker_num;i++) {
+        buffer_queue_push(work_queue,NULL); // poison pill
+    }
+    for (int i=0;i<worker_num;i++) {
         pthread_join(workers[i],NULL);
     }
-    CLEAN_AND_EXIT( ,{retval=0;pthread_exit(&retval);});
+    CLEAN_AND_EXIT( ,return 0);
 }
 
 int skip_white(FILE *file) {
@@ -209,8 +222,8 @@ int read_config(FILE *config_file) {
         }
         /* Checks validity of records */
         enum {SOURCE,TARGET};
-        struct get_file_list_args *args;
-        if ((args=malloc(sizeof(struct get_file_list_args)))==NULL) {
+        struct work_record *rec;
+        if ((rec=malloc(sizeof(struct work_record)))==NULL) {
             string_free(source_dir);
             string_free(source_addr_str);
             string_free(target_dir);
@@ -219,45 +232,29 @@ int read_config(FILE *config_file) {
         }
         if (string_pos(source_dir,0)!='/' || string_pos(target_dir,0)!='/' || 
             source_port==-1 || target_port==-1 || 
-            inet_aton(string_ptr(source_addr_str),&args->sock_tuple[SOURCE].sin_addr)==0 ||
-            inet_aton(string_ptr(target_addr_str),&args->sock_tuple[TARGET].sin_addr)==0) {
+            inet_aton(string_ptr(source_addr_str),&rec->sock_tuple[SOURCE].sin_addr)==0 ||
+            inet_aton(string_ptr(target_addr_str),&rec->sock_tuple[TARGET].sin_addr)==0) {
             printf("Skipped %s\n",string_ptr(source_dir));//
             string_free(source_dir);
             string_free(source_addr_str);
             string_free(target_dir);
             string_free(target_addr_str);
-            free(args);
+            free(rec);
             continue;
         }
-        args->sock_tuple[SOURCE].sin_family=AF_INET;
-        args->sock_tuple[TARGET].sin_family=AF_INET;
-        args->sock_tuple[SOURCE].sin_port=htons(source_port);
-        args->sock_tuple[TARGET].sin_port=htons(target_port);
-        args->source_dir=source_dir;
+        rec->sock_tuple[SOURCE].sin_family=AF_INET;
+        rec->sock_tuple[TARGET].sin_family=AF_INET;
+        rec->sock_tuple[SOURCE].sin_port=htons(source_port);
+        rec->sock_tuple[TARGET].sin_port=htons(target_port);
+        rec->source_dir=source_dir;
+        rec->target_dir=target_dir;
+        rec->file=NULL;
         /*                              */
         printf("%s@%s:%d -> %s@%s:%d\n",string_ptr(source_dir),string_ptr(source_addr_str),source_port,
                                         string_ptr(target_dir),string_ptr(target_addr_str),target_port);//
-        pthread_t thr;
-        if (pthread_create(&thr,NULL,get_file_list,args)!=0) {
-            string_free(source_dir);
-            string_free(source_addr_str);
-            string_free(target_dir);
-            string_free(target_addr_str);
-            free(args);
-            return PTHREAD_ERR;
-        }
-        if (pthread_detach(thr)!=0) {
-            string_free(source_dir);
-            string_free(source_addr_str);
-            string_free(target_dir);
-            string_free(target_addr_str);
-            pthread_join(thr,NULL);
-            return PTHREAD_ERR;
-        }
-        //string_free(source_dir);  // freed by get_file_list thread (for now)
-        string_free(source_addr_str);//
-        string_free(target_dir);
-        string_free(target_addr_str);//
+        buffer_queue_push(producers_queue,rec);
+        string_free(source_addr_str);
+        string_free(target_addr_str);
     } while (1);
 }
 
@@ -300,66 +297,93 @@ int bind_socket(int sock,int32_t addr,uint16_t port) {
     return bind(sock,(struct sockaddr *) &str,sizeof(str));
 }
 
-void *worker_thread(void *args) {
+void *get_file_list(void *args) {
+    enum {SOURCE,TARGET};
+    struct work_record *rec;
+    while ((rec=buffer_queue_pop(producers_queue))!=NULL) {
+        int sockfd=socket(AF_INET,SOCK_STREAM,0);
+        if (sockfd==-1) {
+            perror("Socket couldn't be created\n");//
+            string_free(rec->source_dir);
+            string_free(rec->target_dir);
+            free(rec);
+            return NULL;    // think about how to handle errors
+        }       // think about using non-blocking connect
+        if (connect(sockfd,(struct sockaddr *) &rec->sock_tuple[SOURCE],sizeof(rec->sock_tuple[SOURCE]))==-1) {
+            perror("Connection couldn't be made\n");//
+            string_free(rec->source_dir);
+            string_free(rec->target_dir);
+            free(rec);
+            continue;
+        }
+        char list[] = "LIST ";
+        write(sockfd,list,sizeof(list)-1);
+        write(sockfd,string_ptr(rec->source_dir),string_length(rec->source_dir));
+        write(sockfd,"\n",1);
+        String file;
+        while(1) {
+            file=string_create(10);
+            if (file==NULL) {
+                perror("Memory allocation error\n");
+                string_free(rec->source_dir);
+                string_free(rec->target_dir);
+                free(rec);
+                return NULL;
+            }
+            while(1) {
+                char ch;
+                if (read(sockfd,&ch,1)<1) {
+                    string_free(rec->source_dir);
+                    string_free(rec->target_dir);
+                    string_free(file);
+                    free(rec);
+                    return NULL;
+                }
+                if (ch=='\n')
+                    break;
+                if (string_push(file,ch)==-1) {
+                    perror("Memory allocation error\n");
+                    string_free(rec->source_dir);
+                    string_free(rec->target_dir);
+                    string_free(file);
+                    free(rec);
+                    return NULL;
+                }
+            }
+            if (strcmp(string_ptr(file),".")==0) {
+                string_free(file);
+                break;
+            }
+            struct work_record *file_rec;
+            if ((file_rec=malloc(sizeof(struct work_record)))==NULL) {
+                perror("Memory allocation error\n");
+                string_free(rec->source_dir);
+                string_free(rec->target_dir);
+                string_free(file);
+                free(rec);
+                return NULL;
+            }
+            file_rec->sock_tuple[SOURCE]=rec->sock_tuple[SOURCE];   // maybe also make it reference
+            file_rec->sock_tuple[TARGET]=rec->sock_tuple[TARGET];
+            file_rec->source_dir=rec->source_dir;
+            file_rec->target_dir=rec->target_dir;
+            file_rec->file=file;
+            buffer_queue_push(work_queue,file_rec);
+        }
+        string_free(rec->source_dir);// just for now
+        string_free(rec->target_dir);//
+        close(sockfd);
+        free(rec);//
+    }
     return NULL;
 }
 
-void *get_file_list(void *void_args) {
-    enum {SOURCE,TARGET};
-    struct get_file_list_args *args=void_args;
-    int sockfd=socket(AF_INET,SOCK_STREAM,0);
-    if (sockfd==-1) {
-        perror("Socket couldn't be created\n");//
-        string_free(args->source_dir);
-        free(args);
-        return NULL;
-    }       // think about using non-blocking connect
-    if (connect(sockfd,(struct sockaddr *) &args->sock_tuple[SOURCE],sizeof(args->sock_tuple[SOURCE]))==-1) {
-        perror("Connection couldn't be made\n");//
-        string_free(args->source_dir);
-        free(args);
-        return NULL;
+void *worker_thread(void *args) {
+    struct work_record *rec;
+    while ((rec=buffer_queue_pop(work_queue))!=NULL) {
+        printf("%s\n",string_ptr(rec->file));
+        string_free(rec->file);
+        free(rec);
     }
-    char list[] = "LIST ";
-    write(sockfd,list,sizeof(list)-1);
-    write(sockfd,string_ptr(args->source_dir),string_length(args->source_dir));
-    write(sockfd,"\n",1);
-    String file;
-    while(1) {
-        file=string_create(10);
-        if (file==NULL) {
-            perror("Memory allocation error\n");
-            string_free(args->source_dir);
-            free(args);
-            return NULL;
-        }
-        while(1) {
-            char ch;
-            if (read(sockfd,&ch,1)<1) {         // read doesnt timeout
-                string_free(args->source_dir);
-                string_free(file);
-                free(args);
-                return NULL;
-            }
-            if (ch=='\n')
-                break;
-            if (string_push(file,ch)==-1) {
-                perror("Memory allocation error\n");
-                string_free(args->source_dir);
-                string_free(file);
-                free(args);
-                return NULL;
-            }
-        }
-        if (strcmp(string_ptr(file),".")==0) {
-            string_free(file);
-            break;
-        }
-        printf("%s\n",string_ptr(file)); // no synchro
-        string_free(file);
-    }
-    string_free(args->source_dir);
-    close(sockfd);
-    free(args);
     return NULL;
 }

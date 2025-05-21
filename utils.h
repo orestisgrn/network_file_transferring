@@ -12,7 +12,9 @@ enum return_codes {
 
 #define CLEAN_AND_EXIT(PRINT_CMD,RETURN_CMD) { \
     buffer_queue_free(work_queue); \
+    buffer_queue_free(producers_queue); \
     free(workers); \
+    free(file_producers); \
     if (config_file != NULL) fclose(config_file); \
     PRINT_CMD; \
     RETURN_CMD; \
