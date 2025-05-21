@@ -112,6 +112,8 @@ int bind_socket(int sock,int32_t addr,uint16_t port) {
     return bind(sock,(struct sockaddr *) &str,sizeof(str));
 }
 
+void list(const char *path,int fd);
+
 void *connection_thread(void *void_fd) {
     int *fd = void_fd;
     char ch;
@@ -121,7 +123,14 @@ void *connection_thread(void *void_fd) {
         free(fd);
         return NULL;   // Think about how to handle in-thread errors
     }
-    while(read(*fd,&ch,sizeof(ch))>0) {
+    while(1) {
+        if (read(*fd,&ch,sizeof(ch))<1) {
+            string_free(msg);
+            free(fd);
+            return NULL;
+        }
+        if (ch=='\n')
+            break;
         if (string_push(msg,ch)==-1) {
             perror("Memory allocation error\n");
             string_free(msg);
@@ -136,20 +145,7 @@ void *connection_thread(void *void_fd) {
     }
     const char *path=string_ptr(msg)+6;
     if (strncmp(string_ptr(msg),"LIST",4)==0) {
-        DIR *dir_ptr=opendir(path);         // iterate through files
-        printf("%s\n",path);
-        if (dir_ptr!=NULL) {
-            struct dirent *direntp;
-            int dir_fd = dirfd(dir_ptr);
-            while ((direntp=readdir(dir_ptr))!=NULL) {
-                struct stat st;
-                fstatat(dir_fd,direntp->d_name,&st,0);
-                if (S_ISREG(st.st_mode))
-                    printf("%s\n",direntp->d_name);
-            }
-        }
-        printf(".\n");
-        closedir(dir_ptr);
+        list(path,*fd);
     }
     else if (strncmp(string_ptr(msg),"PUSH",4)==0) {
         printf("%s\n",string_ptr(msg)); // no synchro
@@ -160,6 +156,26 @@ void *connection_thread(void *void_fd) {
     else
         printf("Invalid command\n"); // no synchro
     string_free(msg);
+    close(*fd);
     free(fd);
     return NULL;
+}
+
+void list(const char *path,int fd) {
+    DIR *dir_ptr=opendir(path);         // iterate through files
+    printf("%s\n",path);
+    if (dir_ptr!=NULL) {
+        struct dirent *direntp;
+        int dir_fd = dirfd(dir_ptr);
+        while ((direntp=readdir(dir_ptr))!=NULL) {  // readdir -> not thread-safe
+            struct stat st;             // doesn't check if file is accessible
+            fstatat(dir_fd,direntp->d_name,&st,0);
+            if (S_ISREG(st.st_mode)) {
+                write(fd,direntp->d_name,strlen(direntp->d_name));
+                write(fd,"\n",1);
+            }
+        }
+    }
+    write(fd,".\n",2);  // warning: has to send \n
+    closedir(dir_ptr);
 }

@@ -9,6 +9,7 @@
 #include <ctype.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <string.h>
 #include "utils.h"
 #include "buffer_queue.h"
 #include "string.h"
@@ -16,6 +17,8 @@
 int worker_num = 5;
 int running_workers=0;  // maybe running threads? (for all threads)
 pthread_t *workers;
+
+pthread_mutex_t mutex=PTHREAD_MUTEX_INITIALIZER;
 
 int retval;
 
@@ -33,6 +36,7 @@ void *get_file_list(void *void_args);
 struct get_file_list_args {
     struct sockaddr_in sock_tuple[2];
     String source_dir;
+    String target_dir;
 };
 
 
@@ -319,8 +323,43 @@ void *get_file_list(void *void_args) {
     char list[] = "LIST ";
     write(sockfd,list,sizeof(list)-1);
     write(sockfd,string_ptr(args->source_dir),string_length(args->source_dir));
-    close(sockfd);
+    write(sockfd,"\n",1);
+    String file;
+    while(1) {
+        file=string_create(10);
+        if (file==NULL) {
+            perror("Memory allocation error\n");
+            string_free(args->source_dir);
+            free(args);
+            return NULL;
+        }
+        while(1) {
+            char ch;
+            if (read(sockfd,&ch,1)<1) {         // read doesnt timeout
+                string_free(args->source_dir);
+                string_free(file);
+                free(args);
+                return NULL;
+            }
+            if (ch=='\n')
+                break;
+            if (string_push(file,ch)==-1) {
+                perror("Memory allocation error\n");
+                string_free(args->source_dir);
+                string_free(file);
+                free(args);
+                return NULL;
+            }
+        }
+        if (strcmp(string_ptr(file),".")==0) {
+            string_free(file);
+            break;
+        }
+        printf("%s\n",string_ptr(file)); // no synchro
+        string_free(file);
+    }
     string_free(args->source_dir);
+    close(sockfd);
     free(args);
     return NULL;
 }
