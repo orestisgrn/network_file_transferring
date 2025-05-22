@@ -6,9 +6,17 @@
 #include <errno.h>
 #include <string.h>
 #include <stdlib.h>
+#include <ctype.h>
+#include <unistd.h>
+#include "string.h"
 #include "utils.h"
 
+int sockfd;
+
 FILE *log_file;
+
+void read_response(void);
+void read_shutdown(void);
 
 int main(int argc, char **argv) {
     char opt='\0';
@@ -81,13 +89,126 @@ int main(int argc, char **argv) {
         fclose(log_file);
         return INVALID_IP;
     }
-    int sockfd = socket(AF_INET,SOCK_STREAM,0);
+    sockfd = socket(AF_INET,SOCK_STREAM,0);
     if (sockfd==-1) {
         perror("Socket couldn't be created\n");
         fclose(log_file);
         return SOCK_ERR;
     }
+    if (connect(sockfd,(struct sockaddr *) &sock_str,sizeof(sock_str))==-1) {
+        printf("Connection couldn't be made\n");
+        fclose(log_file);
+        return 0;
+    }
     /*   Main console loop   */
-    fclose(log_file);
-    return 0;
+    while(1) {
+        int ch;
+        String cmd = string_create(15);
+        if (cmd==NULL) {
+            perror("Memory allocation error");
+            fclose(log_file);
+            close(sockfd);
+            return ALLOC_ERR;
+        }
+        int wrote_char=0;
+        printf("> ");
+        do {
+            ch = getchar();
+            if (ch==EOF) {
+                string_free(cmd);
+                char shutdown[]="shutdown\n";
+                write(sockfd,shutdown,sizeof(shutdown)-1);
+                putchar('\n');
+                char return_code;
+                read(sockfd,&return_code,1);
+                read_shutdown();
+                close(sockfd);
+                fclose(log_file);
+                return 0;
+            }
+            if (!isspace(ch))
+                wrote_char = 1;
+            if (string_push(cmd,ch)==-1) {
+                string_free(cmd);
+                perror("Memory allocation error");
+                close(sockfd);
+                fclose(log_file);
+                return ALLOC_ERR;
+            }
+        } while (ch!='\n');
+        if (wrote_char) {
+            write(sockfd,string_ptr(cmd),string_length(cmd));
+            char return_code;
+            /*   nfs_manager sends a return code to show what command was inserted or if the command is invalid   */
+            read(sockfd,&return_code,sizeof(return_code));
+            if (return_code==NO_COMMAND) {
+                while (1) {
+                    char ch;
+                    read(sockfd,&ch,sizeof(ch));
+                    putc(ch,stdout);
+                    putc(ch,log_file);
+                    if (ch=='\n')
+                        break;
+                }
+            }
+            else if (return_code==SHUTDOWN) {
+                read_shutdown();
+                close(sockfd);
+                fclose(log_file);
+                string_free(cmd);
+                return 0;
+            }
+            else {
+                /*   For commands with argument, we wait for another char code   */
+                /*char ch;
+                read(fss_out_fd,&ch,sizeof(ch));
+                if (ch==INVALID_SOURCE || ch==NOT_MONITORED || 
+                    ch==NOT_ARCHIVED || ch==ARCHIVED || ch==INVALID_TARGET) {
+                    char buff[30];
+                    int chars_read;
+                    while ((chars_read=read(fss_out_fd,buff,sizeof(buff)))>0)
+                        fwrite(buff,sizeof(buff[0]),chars_read,stdout);
+                }
+                else {
+                    read_response();
+                }
+                */
+            }
+        }
+        string_free(cmd);
+    }
+}
+
+/*   read_response first writes the command message from nfs_manager to the log, then reads the rest of the response   */
+void read_response(void) {
+    char ch;
+    while (1) {
+        read(sockfd,&ch,sizeof(ch));
+        putc(ch,log_file);
+        if (ch=='\n')
+            break;
+    }
+    while (1) {
+        read(sockfd,&ch,sizeof(ch));
+        putc(ch,stdout);
+        putc(ch,log_file);
+        if (ch=='\n')
+            break;
+    }
+}
+
+void read_shutdown(void) {
+    char ch;
+    while (1) {
+        read(sockfd,&ch,sizeof(ch));
+        putc(ch,log_file);
+        if (ch=='\n')
+            break;
+    }
+    int chars_read;
+    char buff[30];
+    while((chars_read=read(sockfd,buff,sizeof(buff)))!=0) {
+        fwrite(buff,sizeof(buff[0]),chars_read,stdout);
+        fwrite(buff,sizeof(buff[0]),chars_read,log_file);
+    }
 }

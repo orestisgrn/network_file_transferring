@@ -9,6 +9,14 @@ enum return_codes {
     ACCEPT_ERR,
     PTHREAD_ERR,
     INVALID_IP,
+    CONSOLE_ERR,
+};
+
+enum cmd_codes {
+    NO_COMMAND,
+    SHUTDOWN,
+    ADD,
+    CANCEL,
 };
 
 #define CLEAN_AND_EXIT(PRINT_CMD,RETURN_CMD) { \

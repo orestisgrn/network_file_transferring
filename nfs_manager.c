@@ -22,6 +22,8 @@ pthread_t *file_producers;
 
 int32_t port_number = -1;
 
+int console_fd;
+
 Buffer_Queue work_queue;
 Buffer_Queue producers_queue;
 
@@ -31,6 +33,11 @@ int bind_socket(int sock,int32_t addr,uint16_t port);
 
 void *worker_thread(void *args);
 void *get_file_list(void *args);
+
+int read_commands(void);
+int process_command(String cmd,char *cmd_code);
+
+void terminate_threads(void);
 
 int main(int argc,char **argv) {
     char opt = '\0';
@@ -149,20 +156,34 @@ int main(int argc,char **argv) {
             CLEAN_AND_EXIT(perror("Error while reading config file\n"),return code);
         }
     }
-    accept(console_sock,NULL,NULL);//
-    for (int i=0;i<FILE_PRODUCER_NUM;i++) {
-        buffer_queue_push(producers_queue,NULL); // poison pill
+    console_fd=accept(console_sock,NULL,NULL);
+    int retval;
+    if (console_fd!=-1) {
+        retval = read_commands();
+        if (retval==0) {
+            time_t t = time(NULL);
+            char cur_time_str[30];
+            strftime(cur_time_str,30,"%Y-%m-%d %H:%M:%S",localtime(&t));
+            printf("[%s] Shutting down manager...\n",cur_time_str);
+            dprintf(console_fd,"[%s] Shutting down manager...\n",cur_time_str);
+            printf("[%s] Waiting for all active workers to finish.\n",cur_time_str);
+            dprintf(console_fd,"[%s] Waiting for all active workers to finish.\n",cur_time_str);
+            printf("[%s] Processing remaining queued tasks.\n",cur_time_str);
+            dprintf(console_fd,"[%s] Processing remaining queued tasks.\n",cur_time_str);
+            terminate_threads();
+            t = time(NULL);
+            strftime(cur_time_str,30,"%Y-%m-%d %H:%M:%S",localtime(&t));
+            printf("[%s] Manager shutdown complete.\n",cur_time_str);
+            dprintf(console_fd,"[%s] Manager shutdown complete.\n",cur_time_str);
+            close(console_fd);
+        }
     }
-    for (int i=0;i<FILE_PRODUCER_NUM;i++) {
-        pthread_join(file_producers[i],NULL);
+    else {
+        retval = ACCEPT_ERR;
+        perror("Error on accept\n");
+        terminate_threads();
     }
-    for (int i=0;i<worker_num;i++) {
-        buffer_queue_push(work_queue,NULL); // poison pill
-    }
-    for (int i=0;i<worker_num;i++) {
-        pthread_join(workers[i],NULL);
-    }
-    CLEAN_AND_EXIT( ,return 0);
+    CLEAN_AND_EXIT( ,return retval);
 }
 
 int skip_white(FILE *file) {
@@ -287,6 +308,41 @@ int read_dest(FILE *config_file,String path,String addr,int32_t *port) {
         return EOF;
     *port = -1;
     return 0;
+}
+
+int read_commands(void) {
+    char ch;
+    while(1) {
+        String cmd = string_create(15);
+        if (cmd==NULL) {
+            perror("Memory allocation error\n");
+            return ALLOC_ERR;
+        }
+        while(1) {
+            if (read(console_fd,&ch,sizeof(ch))<1) {
+                string_free(cmd);
+                perror("Console read error\n");
+                return CONSOLE_ERR;
+            }
+            if (string_push(cmd,ch)==-1) {
+                string_free(cmd);
+                perror("Memory allocation error\n");
+                return ALLOC_ERR;
+            }
+            if (ch=='\n')
+                break;
+        }
+        char cmd_code;
+        int err_code;
+        if ((err_code=process_command(cmd,&cmd_code))!=0) {
+            fprintf(stderr,"Error while executing command: %s\n",string_ptr(cmd));
+            string_free(cmd);
+            return err_code;
+        }
+        string_free(cmd);
+        if (cmd_code==SHUTDOWN)
+            return 0;
+    }
 }
 
 int bind_socket(int sock,int32_t addr,uint16_t port) {
@@ -416,7 +472,7 @@ void *worker_thread(void *args) {
         write(sourcefd,pull,sizeof(pull)-1);
         write(sourcefd,string_ptr(rec->source_dir),string_length(rec->source_dir));
         write(sourcefd,"/",1);
-        write(sourcefd,string_ptr(rec->file),string_length(rec->file)-1);
+        write(sourcefd,string_ptr(rec->file),string_length(rec->file));
         write(sourcefd,"\n",1);
         string_free(rec->source_dir);
         string_free(rec->target_dir);
@@ -425,4 +481,91 @@ void *worker_thread(void *args) {
         close(sourcefd);
     }
     return NULL;
+}
+
+void terminate_threads(void) {
+    for (int i=0;i<FILE_PRODUCER_NUM;i++) {
+        buffer_queue_push(producers_queue,NULL); // poison pill
+    }
+    for (int i=0;i<FILE_PRODUCER_NUM;i++) {
+        pthread_join(file_producers[i],NULL);
+    }
+    for (int i=0;i<worker_num;i++) {
+        buffer_queue_push(work_queue,NULL); // poison pill
+    }
+    for (int i=0;i<worker_num;i++) {
+        pthread_join(workers[i],NULL);
+    }
+}
+
+int handle_cmd(String argv);
+
+int process_command(String cmd,char *cmd_code) {           // Command ends in \n
+    *cmd_code = NO_COMMAND;
+    const char *cmd_ptr = string_ptr(cmd);
+    String argv = string_create(15);
+    //struct sync_info_rec *rec;
+    //char *real_source;
+    int argc=0;
+    if (argv==NULL) {
+        return ALLOC_ERR;
+    }
+    /*   Main loop: iterate the command character by character, while skipping spaces   */
+    while (1) {
+        while (!isspace(*cmd_ptr)) {    // arguments are fetched here
+            if (string_push(argv,*cmd_ptr)==-1) {
+                string_free(argv);
+                return ALLOC_ERR;
+            }
+            cmd_ptr++;
+        }
+        if (string_length(argv)!=0) {   // If argument is found, act depending on the arg num (argc)
+            if (argc==0) {
+                *cmd_code=handle_cmd(argv);
+                write(console_fd,cmd_code,sizeof(*cmd_code));
+                if (*cmd_code==SHUTDOWN) {
+                    char time_str[30];
+                    time_t t = time(NULL);
+                    strftime(time_str,30,"%Y-%m-%d %H:%M:%S",localtime(&t));
+                    dprintf(console_fd,"[%s] Command shutdown\n",time_str);
+                    string_free(argv);
+                    return 0;
+                }
+                if (*cmd_code==NO_COMMAND) {
+                    char time_str[30];
+                    time_t t = time(NULL);
+                    strftime(time_str,30,"%Y-%m-%d %H:%M:%S",localtime(&t));
+                    printf("[%s] Invalid command: %s\n",time_str,string_ptr(argv));
+                    dprintf(console_fd,"[%s] Invalid command: %s\n",time_str,string_ptr(argv));
+                    string_free(argv);
+                    return 0;
+                }
+                argc++;
+            }
+            string_free(argv);
+            argv = string_create(15);
+            if (argv==NULL) {
+                return ALLOC_ERR;
+            }
+        }
+        if (*(++cmd_ptr)=='\0')
+            break;
+    }
+    string_free(argv);
+    return 0;
+}
+
+int handle_cmd(String argv) {
+    if (!strcmp(string_ptr(argv),"shutdown")) {
+        return SHUTDOWN;
+    }
+    else if (!strcmp(string_ptr(argv),"add")) {
+        return ADD;
+    }
+    else if (!strcmp(string_ptr(argv),"cancel")) {
+        return CANCEL;
+    }
+    else {
+        return NO_COMMAND;
+    }
 }

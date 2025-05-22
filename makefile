@@ -1,6 +1,6 @@
 MANAGER_OBJS = nfs_manager.o buffer_queue.o string.o
 MANAGER_OUT = nfs_manager
-CONSOLE_OBJS = nfs_console.o
+CONSOLE_OBJS = nfs_console.o string.o
 CONSOLE_OUT = nfs_console
 CLIENT_OBJS = nfs_client.o string.o
 CLIENT_OUT = nfs_client
@@ -29,7 +29,7 @@ buffer_queue.o: buffer_queue.c buffer_queue.h
 string.o: string.c string.h
 	$(CC) $(FLAGS) string.c
 
-nfs_console.o: nfs_console.c utils.h
+nfs_console.o: nfs_console.c utils.h string.h
 	$(CC) $(FLAGS) nfs_console.c
 
 nfs_client.o: nfs_client.c utils.h string.h
