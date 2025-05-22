@@ -59,9 +59,9 @@ int main(int argc,char **argv) {
                     config = *argv;
                     break;
                 case 'n':
-                    wrong_char=NULL;
+                    wrong_char=NULL;    // do we need that set?
                     worker_num = strtol(*argv,&wrong_char,10);
-                    if (*wrong_char!='\0') {
+                    if (*wrong_char!='\0') {    // check errno for overflow
                         CLEAN_AND_EXIT(perror("Worker number must be int\n"),return ARGS_ERR);
                     }
                     if (worker_num < 1) {
@@ -74,8 +74,8 @@ int main(int argc,char **argv) {
                     if (*wrong_char!='\0') {
                         CLEAN_AND_EXIT(perror("Port number must be int\n"),return ARGS_ERR);
                     }
-                    if (port_number < 0 || port_number > 1 << 16) {
-                        CLEAN_AND_EXIT(perror("Port number must be a 16-bit integer\n"),return ARGS_ERR);
+                    if (port_number < 0 || port_number >= 1 << 16) {
+                        CLEAN_AND_EXIT(perror("Port number must be a 16-bit unsigned integer\n"),return ARGS_ERR);
                     }
                     break;
                 case 'b':
@@ -301,7 +301,7 @@ int read_dest(FILE *config_file,String path,String addr,int32_t *port) {
         if (ch==EOF)
             return EOF;
     }
-    int scan_code=fscanf(config_file,"%d",port);
+    int scan_code=fscanf(config_file,"%d",port);// maybe do it safely with strtol (need to store to string)
     if (scan_code==1)
         return 0;
     if (scan_code==EOF)
@@ -498,14 +498,14 @@ void terminate_threads(void) {
     }
 }
 
+int separate_destination_args(String argv,String *path,String *ip_addr,String *port_str);
 int handle_cmd(String argv);
 
 int process_command(String cmd,char *cmd_code) {           // Command ends in \n
     *cmd_code = NO_COMMAND;
     const char *cmd_ptr = string_ptr(cmd);
     String argv = string_create(15);
-    //struct sync_info_rec *rec;
-    //char *real_source;
+    struct work_record *rec;
     int argc=0;
     if (argv==NULL) {
         return ALLOC_ERR;
@@ -542,6 +542,73 @@ int process_command(String cmd,char *cmd_code) {           // Command ends in \n
                 }
                 argc++;
             }
+            else if (argc==1) {
+                String path;
+                String ip_addr;
+                String port_str;
+                int code=separate_destination_args(argv,&path,&ip_addr,&port_str);
+                if (code==ALLOC_ERR) {
+                    string_free(path);
+                    string_free(ip_addr);
+                    string_free(port_str);
+                    string_free(argv);
+                    return ALLOC_ERR;
+                }
+                if (code==EOF) {
+                    *cmd_code=INVALID_SOURCE;
+                    write(console_fd,cmd_code,sizeof(*cmd_code));
+                    char time_str[30];
+                    time_t t = time(NULL);
+                    strftime(time_str,30,"%Y-%m-%d %H:%M:%S",localtime(&t));
+                    printf("[%s] Invalid source: %s\n",time_str,string_ptr(argv));
+                    dprintf(console_fd,"[%s] Invalid source: %s\n",time_str,string_ptr(argv));
+                    string_free(path);
+                    string_free(ip_addr);
+                    string_free(port_str);
+                    string_free(argv);
+                    return 0;
+                }
+                enum {SOURCE,TARGET};
+                if ((rec=malloc(sizeof(struct work_record)))==NULL) {
+                    string_free(path);
+                    string_free(ip_addr);
+                    string_free(port_str);
+                    string_free(argv);
+                    return ALLOC_ERR;
+                }
+                char *wrong_char=NULL;
+                long port = strtol(string_ptr(port_str),&wrong_char,10);
+                int strtol_err=errno;
+                if (string_pos(path,0)!='/' || 
+                    inet_aton(string_ptr(ip_addr),&rec->sock_tuple[SOURCE].sin_addr)==0 ||
+                    *wrong_char!='\0' || strtol_err!=0 || port < 0 || port >= 1 << 16) {
+                    *cmd_code=INVALID_SOURCE;
+                    write(console_fd,cmd_code,sizeof(*cmd_code));
+                    char time_str[30];
+                    time_t t = time(NULL);
+                    strftime(time_str,30,"%Y-%m-%d %H:%M:%S",localtime(&t));
+                    printf("[%s] Invalid source: %s\n",time_str,string_ptr(argv));
+                    dprintf(console_fd,"[%s] Invalid source: %s\n",time_str,string_ptr(argv));
+                    string_free(path);
+                    string_free(ip_addr);
+                    string_free(port_str);
+                    string_free(argv);
+                    free(rec);
+                    return 0;
+                }
+                rec->sock_tuple[SOURCE].sin_family=AF_INET;
+                rec->sock_tuple[SOURCE].sin_port=htons(port);
+                rec->source_dir=path;
+                rec->file=NULL;
+                string_free(ip_addr);
+                string_free(port_str);
+                write(console_fd,cmd_code,sizeof(*cmd_code));
+                dprintf(console_fd,"Command message\n");//
+                dprintf(console_fd,"Got that boss\n");//
+                string_free(path);//
+                free(rec);
+                argc++;
+            }
             string_free(argv);
             argv = string_create(15);
             if (argv==NULL) {
@@ -552,6 +619,25 @@ int process_command(String cmd,char *cmd_code) {           // Command ends in \n
             break;
     }
     string_free(argv);
+    if (argc==1) {
+        *cmd_code = INVALID_SOURCE;
+        write(console_fd,cmd_code,sizeof(*cmd_code));
+        char time_str[30];
+        time_t t = time(NULL);
+        strftime(time_str,30,"%Y-%m-%d %H:%M:%S",localtime(&t));
+        dprintf(console_fd,"[%s] Source directory not given.\n",time_str);
+    }
+    /*
+    if (argc==2 && *cmd_code==ADD) {
+        *cmd_code = INVALID_TARGET;
+        write(fss_out_fd,cmd_code,sizeof(*cmd_code));
+        char time_str[30];
+        time_t t = time(NULL);
+        strftime(time_str,30,"%Y-%m-%d %H:%M:%S",localtime(&t));
+        dprintf(fss_out_fd,"[%s] Target directory not given.\n",time_str);
+        free(real_source);
+    }
+    */
     return 0;
 }
 
@@ -568,4 +654,39 @@ int handle_cmd(String argv) {
     else {
         return NO_COMMAND;
     }
+}
+
+int separate_destination_args(String argv,String *path,String *ip_addr,String *port_str) {
+    const char *argv_ptr=string_ptr(argv);
+    *path=string_create(10);
+    *ip_addr=string_create(15);
+    *port_str=string_create(6);
+    if (*path==NULL || *ip_addr==NULL || *port_str==NULL)
+        return ALLOC_ERR;
+    while (*argv_ptr!='@') {
+        if (string_push(*path,*argv_ptr)==-1)
+            return ALLOC_ERR;
+        argv_ptr++;
+        if (*argv_ptr=='\0')
+            return EOF;
+    }
+    argv_ptr++;
+    if (*argv_ptr=='\0')
+        return EOF;
+    while (*argv_ptr!=':') {
+        if (string_push(*ip_addr,*argv_ptr)==-1)
+            return ALLOC_ERR;
+        argv_ptr++;
+        if (*argv_ptr=='\0')
+            return EOF;
+    }
+    argv_ptr++;
+    if (*argv_ptr=='\0')
+        return EOF;
+    while (*argv_ptr!='\0') {
+        if (string_push(*port_str,*argv_ptr)==-1)
+            return ALLOC_ERR;
+        argv_ptr++;
+    }
+    return 0;
 }

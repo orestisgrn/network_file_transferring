@@ -17,6 +17,8 @@ enum cmd_codes {
     SHUTDOWN,
     ADD,
     CANCEL,
+    INVALID_SOURCE,
+    INVALID_TARGET,
 };
 
 #define CLEAN_AND_EXIT(PRINT_CMD,RETURN_CMD) { \

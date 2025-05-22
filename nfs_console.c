@@ -160,19 +160,19 @@ int main(int argc, char **argv) {
             }
             else {
                 /*   For commands with argument, we wait for another char code   */
-                /*char ch;
-                read(fss_out_fd,&ch,sizeof(ch));
-                if (ch==INVALID_SOURCE || ch==NOT_MONITORED || 
-                    ch==NOT_ARCHIVED || ch==ARCHIVED || ch==INVALID_TARGET) {
-                    char buff[30];
-                    int chars_read;
-                    while ((chars_read=read(fss_out_fd,buff,sizeof(buff)))>0)
-                        fwrite(buff,sizeof(buff[0]),chars_read,stdout);
+                char ch;
+                read(sockfd,&ch,sizeof(ch));
+                if (ch==INVALID_SOURCE || ch==INVALID_TARGET) {
+                    while (1) {
+                        read(sockfd,&ch,sizeof(ch));
+                        putc(ch,stdout);
+                        if (ch=='\n')
+                            break;
+                    }
                 }
                 else {
                     read_response();
                 }
-                */
             }
         }
         string_free(cmd);
