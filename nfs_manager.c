@@ -248,6 +248,7 @@ int read_config(FILE *config_file) {
         rec->sock_tuple[TARGET].sin_port=htons(target_port);
         rec->source_dir=source_dir;
         rec->target_dir=target_dir;
+        rec->file=NULL;
         /*                              */
         printf("%s@%s:%d -> %s@%s:%d\n",string_ptr(source_dir),string_ptr(source_addr_str),source_port,
                                         string_ptr(target_dir),string_ptr(target_addr_str),target_port);//
@@ -295,8 +296,6 @@ int bind_socket(int sock,int32_t addr,uint16_t port) {
     str.sin_port=port;
     return bind(sock,(struct sockaddr *) &str,sizeof(str));
 }
-
-String build_path(const char *source,const char *target);
 
 void *get_file_list(void *args) {
     enum {SOURCE,TARGET};
@@ -366,15 +365,18 @@ void *get_file_list(void *args) {
             }
             file_rec->sock_tuple[SOURCE]=rec->sock_tuple[SOURCE];   // maybe also make it reference
             file_rec->sock_tuple[TARGET]=rec->sock_tuple[TARGET];
-            file_rec->source_dir=build_path(string_ptr(rec->source_dir),string_ptr(file));
-            file_rec->target_dir=build_path(string_ptr(rec->target_dir),string_ptr(file));
-            string_free(file);
-            if (file_rec->source_dir==NULL || file_rec->target_dir==NULL) {
+            file_rec->source_dir=string_create(10);
+            file_rec->target_dir=string_create(10);
+            file_rec->file=file;
+            if (file_rec->source_dir==NULL || file_rec->target_dir==NULL ||
+                string_cpy(file_rec->source_dir,string_ptr(rec->source_dir))==-1 ||
+                string_cpy(file_rec->target_dir,string_ptr(rec->target_dir))==-1 ) {
                 perror("Memory allocation error\n");
                 string_free(file_rec->source_dir);
                 string_free(file_rec->target_dir);
                 string_free(rec->source_dir);
                 string_free(rec->target_dir);
+                string_free(file);
                 free(rec);
                 return NULL;
             }
@@ -389,31 +391,38 @@ void *get_file_list(void *args) {
 }
 
 void *worker_thread(void *args) {
+    enum {SOURCE,TARGET};
     struct work_record *rec;
     while ((rec=buffer_queue_pop(work_queue))!=NULL) {
-        printf("%s\n",string_ptr(rec->source_dir));
+        int sourcefd=socket(AF_INET,SOCK_STREAM,0);
+        if (sourcefd==-1) {
+            perror("Socket couldn't be created\n");//
+            string_free(rec->source_dir);
+            string_free(rec->target_dir);
+            string_free(rec->file);
+            free(rec);
+            return NULL;    // think about how to handle errors
+        }       // think about using non-blocking connect
+        if (connect(sourcefd,(struct sockaddr *) &rec->sock_tuple[SOURCE],sizeof(rec->sock_tuple[SOURCE]))==-1) {
+            perror("Connection couldn't be made\n");//
+            string_free(rec->source_dir);
+            string_free(rec->target_dir);
+            string_free(rec->file);
+            free(rec);
+            close(sourcefd);
+            continue;
+        }
+        char pull[]="PULL ";
+        write(sourcefd,pull,sizeof(pull)-1);
+        write(sourcefd,string_ptr(rec->source_dir),string_length(rec->source_dir));
+        write(sourcefd,"/",1);
+        write(sourcefd,string_ptr(rec->file),string_length(rec->file)-1);
+        write(sourcefd,"\n",1);
         string_free(rec->source_dir);
         string_free(rec->target_dir);
+        string_free(rec->file);
         free(rec);
+        close(sourcefd);
     }
     return NULL;
-}
-
-String build_path(const char *source,const char *target) {
-    String path = string_create(10);
-    if (path==NULL)
-        return NULL;
-    if (string_cpy(path,source)==-1) {
-        string_free(path);
-        return NULL;
-    }
-    if (string_push(path,'/')==-1) {
-        string_free(path);
-        return NULL;
-    }
-    if (string_cpy(path,target)==-1) {
-        string_free(path);
-        return NULL;
-    }
-    return path;
 }
