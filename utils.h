@@ -8,6 +8,7 @@ enum return_codes {
     LISTEN_ERR,
     ACCEPT_ERR,
     PTHREAD_ERR,
+    INVALID_IP,
 };
 
 #define CLEAN_AND_EXIT(PRINT_CMD,RETURN_CMD) { \

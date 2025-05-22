@@ -29,7 +29,7 @@ buffer_queue.o: buffer_queue.c buffer_queue.h
 string.o: string.c string.h
 	$(CC) $(FLAGS) string.c
 
-nfs_console.o: nfs_console.c
+nfs_console.o: nfs_console.c utils.h
 	$(CC) $(FLAGS) nfs_console.c
 
 nfs_client.o: nfs_client.c utils.h string.h
