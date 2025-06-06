@@ -14,12 +14,15 @@
 #include "utils.h"
 #include "string.h"
 
+#include <signal.h>
+
 int retval;
 
 int bind_socket(int sock,int32_t addr,uint16_t port);
 void *connection_thread(void *void_fd);
 
 int main(int argc, char **argv) {
+    signal(SIGPIPE,SIG_IGN);
     char opt='\0';
     int32_t port_number=-1;
     while (*(++argv) != NULL) {                 // Command line arguments handle
@@ -113,6 +116,7 @@ int bind_socket(int sock,int32_t addr,uint16_t port) {
 }
 
 void list(const char *path,int fd);
+void pull(const char *path,int fd);
 
 void *connection_thread(void *void_fd) {
     int *fd = void_fd;
@@ -138,7 +142,7 @@ void *connection_thread(void *void_fd) {
             return NULL;
         }
     }
-    if (string_pos(msg,5)!='/') {   // maybe too much checking...
+    if ((string_length(msg)<=5) || (string_pos(msg,5)!='/')) {   // maybe too much checking...
         string_free(msg);
         free(fd);
         return NULL;
@@ -151,7 +155,7 @@ void *connection_thread(void *void_fd) {
         printf("%s\n",string_ptr(msg)); // no synchro
     }
     else if (strncmp(string_ptr(msg),"PULL",4)==0) {
-        printf("%s\n",string_ptr(msg)); // no synchro
+        pull(path,*fd);
     }
     else
         printf("Invalid command\n"); // no synchro
@@ -178,4 +182,37 @@ void list(const char *path,int fd) {
     }
     write(fd,".\n",2);  // warning: has to send \n
     closedir(dir_ptr);
+}
+
+void pull(const char *path,int fd) {
+    int file,error;
+    static char minus_one[]="-1 ";
+    if ((file=open(path,O_RDONLY))==-1) {
+        error=errno;
+        write(fd,minus_one,sizeof(minus_one)-1);
+        write(fd,strerror(error),strlen(strerror(error)));  // strerror -> not thread-safe
+        return;
+    }
+    struct stat in_stat;
+    if (fstat(file,&in_stat)==-1) {
+        error=errno;
+        write(fd,minus_one,sizeof(minus_one)-1);
+        write(fd,strerror(error),strlen(strerror(error)));  // strerror -> not thread-safe
+        return;
+    }
+    if ((in_stat.st_mode & S_IFMT) != S_IFREG) {
+        error=errno;
+        write(fd,minus_one,sizeof(minus_one)-1);
+        write(fd,strerror(error),strlen(strerror(error)));  // strerror -> not thread-safe
+        return;
+    }
+    off_t filesize=in_stat.st_size;
+    char filesize_str[20];          // beware of the max off_t length
+    sprintf(filesize_str,"%ld ",filesize);
+    write(fd,filesize_str,strlen(filesize_str));
+    int nread;
+    char buffer[BUFFSIZE];
+    while ((nread=read(file,buffer,BUFFSIZE))>0)
+        write(fd,buffer,nread);
+    close(file);
 }

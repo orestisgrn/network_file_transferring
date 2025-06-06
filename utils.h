@@ -30,3 +30,5 @@ enum cmd_codes {
     PRINT_CMD; \
     RETURN_CMD; \
 }
+
+#define BUFFSIZE 10

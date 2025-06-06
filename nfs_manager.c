@@ -452,7 +452,7 @@ void *worker_thread(void *args) {
     while ((rec=buffer_queue_pop(work_queue))!=NULL) {
         int sourcefd=socket(AF_INET,SOCK_STREAM,0);
         if (sourcefd==-1) {
-            perror("Socket couldn't be created\n");//
+            perror("Socket couldn't be created\n");// use strerror
             string_free(rec->source_dir);
             string_free(rec->target_dir);
             string_free(rec->file);
@@ -468,17 +468,78 @@ void *worker_thread(void *args) {
             close(sourcefd);
             continue;
         }
-        char pull[]="PULL ";
+        int targetfd=socket(AF_INET,SOCK_STREAM,0);
+        if (targetfd==-1) {
+            perror("Socket couldn't be created\n");//
+            string_free(rec->source_dir);
+            string_free(rec->target_dir);
+            string_free(rec->file);
+            free(rec);
+            close(sourcefd);
+            return NULL;
+        }
+        if (connect(targetfd,(struct sockaddr *) &rec->sock_tuple[TARGET],sizeof(rec->sock_tuple[TARGET]))==-1) {
+            perror("Connection couldn't be made\n");//
+            string_free(rec->source_dir);
+            string_free(rec->target_dir);
+            string_free(rec->file);
+            free(rec);
+            close(sourcefd);
+            close(targetfd);
+            continue;
+        }
+        char pull[]="PULL ";    // skip strerror for now
         write(sourcefd,pull,sizeof(pull)-1);
         write(sourcefd,string_ptr(rec->source_dir),string_length(rec->source_dir));
         write(sourcefd,"/",1);
         write(sourcefd,string_ptr(rec->file),string_length(rec->file));
         write(sourcefd,"\n",1);
+        char push[]="PUSH ";
+        int nread;
+        char nread_str[20] = "-1";
+        char ch,first;
+        int code,error;
+        if ((code=read(sourcefd,&ch,sizeof(char)))==-1) {
+            error=errno;
+            printf("error -1 %d\n",error);
+            // strerror needs synchro
+        }
+        else if (code==0) {
+            error=errno;
+            printf("error 0 %d\n",error);
+            // strerror needs synchro
+        }
+        else {
+            first=ch;
+            while(ch!=' ') {
+                code=read(sourcefd,&ch,sizeof(char));   // check here
+            }
+            if (first=='-') {
+                printf("Error on %s\n",string_ptr(rec->source_dir));//
+            }
+            else {
+                char buffer[BUFFSIZE];
+                while(1) {
+                    write(targetfd,push,sizeof(pull)-1);
+                    write(targetfd,string_ptr(rec->target_dir),string_length(rec->target_dir));
+                    write(targetfd,"/",1);
+                    write(targetfd,string_ptr(rec->file),string_length(rec->file));
+                    write(targetfd," ",1);
+                    write(targetfd,nread_str,strlen(nread_str));
+                    write(targetfd," ",1);
+                    nread=read(sourcefd,buffer,sizeof(buffer)); // check here
+                    write(targetfd,buffer,nread);
+                    write(targetfd,"\n",1);
+                    break;//
+                }
+            }
+        }
         string_free(rec->source_dir);
         string_free(rec->target_dir);
         string_free(rec->file);
         free(rec);
         close(sourcefd);
+        close(targetfd);
     }
     return NULL;
 }
@@ -505,6 +566,7 @@ int process_command(String cmd,char *cmd_code) {           // Command ends in \n
     *cmd_code = NO_COMMAND;
     const char *cmd_ptr = string_ptr(cmd);
     String argv = string_create(15);
+    String source_argv;
     struct work_record *rec;
     int argc=0;
     if (argv==NULL) {
@@ -602,14 +664,96 @@ int process_command(String cmd,char *cmd_code) {           // Command ends in \n
                 rec->file=NULL;
                 string_free(ip_addr);
                 string_free(port_str);
-                write(console_fd,cmd_code,sizeof(*cmd_code));
-                dprintf(console_fd,"Command message\n");//
-                dprintf(console_fd,"Got that boss\n");//
-                string_free(path);//
-                free(rec);
+                if (*cmd_code==CANCEL) {
+                    write(console_fd,cmd_code,sizeof(*cmd_code));
+                    char time_str[30];
+                    time_t t = time(NULL);
+                    strftime(time_str,30,"%Y-%m-%d %H:%M:%S",localtime(&t));
+                    dprintf(console_fd,"[%s] Command cancel %s\n",time_str,string_ptr(argv));
+                    dprintf(console_fd,"Got that cancel\n");//
+                    string_free(path);//
+                    string_free(argv);
+                    free(rec);
+                    return 0;
+                }
+                source_argv=argv;
                 argc++;
             }
-            string_free(argv);
+            else if (argc==2) {
+                String path;
+                String ip_addr;
+                String port_str;
+                int code=separate_destination_args(argv,&path,&ip_addr,&port_str);
+                if (code==ALLOC_ERR) {
+                    string_free(path);
+                    string_free(ip_addr);
+                    string_free(port_str);
+                    string_free(argv);
+                    string_free(source_argv);
+                    string_free(rec->source_dir);
+                    free(rec);
+                    return ALLOC_ERR;
+                }
+                if (code==EOF) {
+                    *cmd_code=INVALID_TARGET;
+                    write(console_fd,cmd_code,sizeof(*cmd_code));
+                    char time_str[30];
+                    time_t t = time(NULL);
+                    strftime(time_str,30,"%Y-%m-%d %H:%M:%S",localtime(&t));
+                    printf("[%s] Invalid target: %s\n",time_str,string_ptr(argv));
+                    dprintf(console_fd,"[%s] Invalid target: %s\n",time_str,string_ptr(argv));
+                    string_free(path);
+                    string_free(ip_addr);
+                    string_free(port_str);
+                    string_free(argv);
+                    string_free(source_argv);
+                    string_free(rec->source_dir);
+                    free(rec);
+                    return 0;
+                }
+                enum {SOURCE,TARGET};
+                char *wrong_char=NULL;
+                long port = strtol(string_ptr(port_str),&wrong_char,10);
+                int strtol_err=errno;
+                if (string_pos(path,0)!='/' || 
+                    inet_aton(string_ptr(ip_addr),&rec->sock_tuple[TARGET].sin_addr)==0 ||
+                    *wrong_char!='\0' || strtol_err!=0 || port < 0 || port >= 1 << 16) {
+                    *cmd_code=INVALID_TARGET;
+                    write(console_fd,cmd_code,sizeof(*cmd_code));
+                    char time_str[30];
+                    time_t t = time(NULL);
+                    strftime(time_str,30,"%Y-%m-%d %H:%M:%S",localtime(&t));
+                    printf("[%s] Invalid target: %s\n",time_str,string_ptr(argv));
+                    dprintf(console_fd,"[%s] Invalid target: %s\n",time_str,string_ptr(argv));
+                    string_free(path);
+                    string_free(ip_addr);
+                    string_free(port_str);
+                    string_free(argv);
+                    string_free(source_argv);
+                    string_free(rec->source_dir);
+                    free(rec);
+                    return 0;
+                }
+                rec->sock_tuple[TARGET].sin_family=AF_INET;
+                rec->sock_tuple[TARGET].sin_port=htons(port);
+                rec->target_dir=path;
+                string_free(ip_addr);
+                string_free(port_str);
+                write(console_fd,cmd_code,sizeof(*cmd_code));
+                char time_str[30];
+                time_t t = time(NULL);
+                strftime(time_str,30,"%Y-%m-%d %H:%M:%S",localtime(&t));
+                dprintf(console_fd,"[%s] Command add %s -> %s\n",time_str,string_ptr(source_argv),string_ptr(argv));
+                dprintf(console_fd,"Got that add\n");//
+                string_free(rec->source_dir);
+                string_free(rec->target_dir);
+                string_free(argv);
+                string_free(source_argv);
+                free(rec);
+                return 0;
+            }
+            if (argc!=2)
+                string_free(argv);
             argv = string_create(15);
             if (argv==NULL) {
                 return ALLOC_ERR;
@@ -627,17 +771,16 @@ int process_command(String cmd,char *cmd_code) {           // Command ends in \n
         strftime(time_str,30,"%Y-%m-%d %H:%M:%S",localtime(&t));
         dprintf(console_fd,"[%s] Source directory not given.\n",time_str);
     }
-    /*
-    if (argc==2 && *cmd_code==ADD) {
+    if (argc==2) {
         *cmd_code = INVALID_TARGET;
-        write(fss_out_fd,cmd_code,sizeof(*cmd_code));
+        write(console_fd,cmd_code,sizeof(*cmd_code));
         char time_str[30];
         time_t t = time(NULL);
         strftime(time_str,30,"%Y-%m-%d %H:%M:%S",localtime(&t));
-        dprintf(fss_out_fd,"[%s] Target directory not given.\n",time_str);
-        free(real_source);
+        dprintf(console_fd,"[%s] Target directory not given.\n",time_str);
+        string_free(rec->source_dir);
+        free(rec);
     }
-    */
     return 0;
 }
 
