@@ -22,10 +22,12 @@ int bind_socket(int sock,int32_t addr,uint16_t port);
 void *connection_thread(void *void_fd);
 
 pthread_mutex_t readdir_mtx;
+pthread_mutex_t strerror_mtx;
 
 int main(int argc, char **argv) {
     signal(SIGPIPE,SIG_IGN);
     pthread_mutex_init(&readdir_mtx,0);
+    pthread_mutex_init(&strerror_mtx,0);
     char opt='\0';
     int32_t port_number=-1;
     while (*(++argv) != NULL) {                 // Command line arguments handle
@@ -201,20 +203,29 @@ void pull(const char *path,int fd) {
     if ((file=open(path,O_RDONLY))==-1) {
         error=errno;
         write(fd,minus_one,sizeof(minus_one)-1);
-        write(fd,strerror(error),strlen(strerror(error)));  // strerror -> not thread-safe
+        pthread_mutex_lock(&strerror_mtx);
+        char *error_str=strerror(error);
+        write(fd,error_str,strlen(error_str));
+        pthread_mutex_unlock(&strerror_mtx);
         return;
     }
     struct stat in_stat;
     if (fstat(file,&in_stat)==-1) {
         error=errno;
         write(fd,minus_one,sizeof(minus_one)-1);
-        write(fd,strerror(error),strlen(strerror(error)));  // strerror -> not thread-safe
+        pthread_mutex_lock(&strerror_mtx);
+        char *error_str=strerror(error);
+        write(fd,error_str,strlen(error_str));
+        pthread_mutex_unlock(&strerror_mtx);
         return;
     }
     if ((in_stat.st_mode & S_IFMT) != S_IFREG) {
         error=errno;
         write(fd,minus_one,sizeof(minus_one)-1);
-        write(fd,strerror(error),strlen(strerror(error)));  // strerror -> not thread-safe
+        pthread_mutex_lock(&strerror_mtx);
+        char *error_str=strerror(error);
+        write(fd,error_str,strlen(error_str));
+        pthread_mutex_unlock(&strerror_mtx);
         return;
     }
     off_t filesize=in_stat.st_size;

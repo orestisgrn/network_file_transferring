@@ -42,8 +42,11 @@ int process_command(String cmd,char *cmd_code);
 
 void terminate_threads(void);
 
+pthread_mutex_t strerror_mtx;
+
 int main(int argc,char **argv) {
     signal(SIGPIPE,SIG_IGN);
+    pthread_mutex_init(&strerror_mtx,0);
     char opt = '\0';
     char *logname = NULL;
     char *config = NULL;
@@ -362,7 +365,6 @@ void *get_file_list(void *args) {
     while ((rec=buffer_queue_pop(producers_queue))!=NULL) {
         int sockfd=socket(AF_INET,SOCK_STREAM,0);
         if (sockfd==-1) {
-            perror("Socket couldn't be created\n");
             string_free(rec->source_dir);
             string_free(rec->target_dir);
             free(rec);
@@ -463,20 +465,29 @@ void *get_file_list(void *args) {
     return NULL;
 }
 
+void log_print_error(char *cmd,char *source_addr_str,char *target_addr_str,struct work_record *rec);
+
 void *worker_thread(void *args) {
     enum {SOURCE,TARGET};
     struct work_record *rec;
     while ((rec=buffer_queue_pop(work_queue))!=NULL) {
+        // creating ip strings to be printed
+        char source_addr_str[INET_ADDRSTRLEN];
+        char target_addr_str[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET,&rec->sock_tuple[SOURCE].sin_addr,source_addr_str,INET_ADDRSTRLEN);
+        inet_ntop(AF_INET,&rec->sock_tuple[TARGET].sin_addr,target_addr_str,INET_ADDRSTRLEN);
+        //
         int sourcefd=socket(AF_INET,SOCK_STREAM,0);
         if (sourcefd==-1) {
-            perror("Socket couldn't be created\n");
+            log_print_error("PULL",source_addr_str,target_addr_str,rec);
             string_free(rec->source_dir);
             string_free(rec->target_dir);
             string_free(rec->file);
             free(rec);
-            return NULL;
+            continue;
         }       // think about using non-blocking connect
         if (connect(sourcefd,(struct sockaddr *) &rec->sock_tuple[SOURCE],sizeof(rec->sock_tuple[SOURCE]))==-1) {
+            log_print_error("PULL",source_addr_str,target_addr_str,rec);
             string_free(rec->source_dir);
             string_free(rec->target_dir);
             string_free(rec->file);
@@ -486,15 +497,16 @@ void *worker_thread(void *args) {
         }
         int targetfd=socket(AF_INET,SOCK_STREAM,0);
         if (targetfd==-1) {
-            perror("Socket couldn't be created\n");
+            log_print_error("PUSH",source_addr_str,target_addr_str,rec);
             string_free(rec->source_dir);
             string_free(rec->target_dir);
             string_free(rec->file);
             free(rec);
             close(sourcefd);
-            return NULL;
+            continue;
         }
         if (connect(targetfd,(struct sockaddr *) &rec->sock_tuple[TARGET],sizeof(rec->sock_tuple[TARGET]))==-1) {
+            log_print_error("PUSH",source_addr_str,target_addr_str,rec);
             string_free(rec->source_dir);
             string_free(rec->target_dir);
             string_free(rec->file);
@@ -503,34 +515,44 @@ void *worker_thread(void *args) {
             close(targetfd);
             continue;
         }
-        char pull[]="PULL ";    // skip strerror for now
+        char pull[]="PULL ";
         write(sourcefd,pull,sizeof(pull)-1);
         write(sourcefd,string_ptr(rec->source_dir),string_length(rec->source_dir));
         write(sourcefd,"/",1);
         write(sourcefd,string_ptr(rec->file),string_length(rec->file));
-        write(sourcefd,"\n",1);
+        if (write(sourcefd,"\n",1)<1) {
+            log_print_error("PULL",source_addr_str,target_addr_str,rec);
+            string_free(rec->source_dir);
+            string_free(rec->target_dir);
+            string_free(rec->file);
+            free(rec);
+            close(sourcefd);
+            close(targetfd);
+            continue;
+        }
         char push[]="PUSH ";
         int nread;
         char nread_str[20];
-        char ch,first;
-        int code,error;
-        if ((code=read(sourcefd,&ch,sizeof(char)))==-1) {
-            error=errno;
-            printf("error -1 %d\n",error);
-            // strerror needs synchro
-        }
-        else if (code==0) {
-            error=errno;
-            printf("error 0 %d\n",error);
-            // strerror needs synchro
+        char ch;
+        int error;
+        if (read(sourcefd,&ch,1)<1) {
+            log_print_error("PULL",source_addr_str,target_addr_str,rec);
+            string_free(rec->source_dir);
+            string_free(rec->target_dir);
+            string_free(rec->file);
+            free(rec);
+            close(sourcefd);
+            close(targetfd);
+            continue;
         }
         else {
-            first=ch;
+            int code;
+            int first=ch;
             while(ch!=' ') {
-                code=read(sourcefd,&ch,sizeof(char));   // check here
+                code=read(sourcefd,&ch,1);  // check here
             }
-            if (first=='-') {
-                printf("Error on %s\n",string_ptr(rec->source_dir));//
+            if (ch=='-') {
+                // print error from socket
             }
             else {
                 char buffer[BUFFSIZE];
@@ -872,4 +894,22 @@ int separate_destination_args(String argv,String *path,String *ip_addr,String *p
         argv_ptr++;
     }
     return 0;
+}
+
+void log_print_error(char *cmd,char *source_addr_str,char *target_addr_str,struct work_record *rec) {
+    enum {SOURCE,TARGET};
+    int error=errno;
+    char time_str[30];
+    time_t t = time(NULL);
+    strftime(time_str,30,"%Y-%m-%d %H:%M:%S",localtime(&t));
+    pthread_mutex_lock(&strerror_mtx);
+    char *error_str=strerror(error);
+    fprintf(log_file,"[%s] [%s/%s@%s:%d] [%s/%s@%s:%d]\n"
+        "[%ld] [%s] [ERROR] [File: %s - %s]\n",
+        time_str,string_ptr(rec->source_dir),string_ptr(rec->file),
+        source_addr_str,ntohs(rec->sock_tuple[SOURCE].sin_port),
+        string_ptr(rec->target_dir),string_ptr(rec->file), 
+        target_addr_str,ntohs(rec->sock_tuple[TARGET].sin_port),
+        pthread_self(),cmd,string_ptr(rec->file),error_str);
+    pthread_mutex_unlock(&strerror_mtx);
 }
