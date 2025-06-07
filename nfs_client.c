@@ -21,8 +21,11 @@ int retval;
 int bind_socket(int sock,int32_t addr,uint16_t port);
 void *connection_thread(void *void_fd);
 
+pthread_mutex_t readdir_mtx;
+
 int main(int argc, char **argv) {
     signal(SIGPIPE,SIG_IGN);
+    pthread_mutex_init(&readdir_mtx,0);
     char opt='\0';
     int32_t port_number=-1;
     while (*(++argv) != NULL) {                 // Command line arguments handle
@@ -175,14 +178,18 @@ void list(const char *path,int fd) {
     if (dir_ptr!=NULL) {
         struct dirent *direntp;
         int dir_fd = dirfd(dir_ptr);
-        while ((direntp=readdir(dir_ptr))!=NULL) {  // readdir -> not thread-safe
+        pthread_mutex_lock(&readdir_mtx);
+        while ((direntp=readdir(dir_ptr))!=NULL) {
+            pthread_mutex_unlock(&readdir_mtx);
             struct stat st;             // doesn't check if file is accessible
             fstatat(dir_fd,direntp->d_name,&st,0);
             if (S_ISREG(st.st_mode)) {
                 write(fd,direntp->d_name,strlen(direntp->d_name));
                 write(fd,"\n",1);
             }
+            pthread_mutex_lock(&readdir_mtx);
         }
+        pthread_mutex_unlock(&readdir_mtx);
     }
     write(fd,".\n",2);  // warning: has to send \n
     closedir(dir_ptr);
