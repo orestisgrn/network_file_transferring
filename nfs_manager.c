@@ -549,10 +549,21 @@ void *worker_thread(void *args) {
             int code;
             int first=ch;
             while(ch!=' ') {
-                code=read(sourcefd,&ch,1);  // check here
+                if ((code=read(sourcefd,&ch,1))<1)
+                    break;
             }
-            if (ch=='-') {
-                // print error from socket
+            if (code<1) {
+                log_print_error("PULL",source_addr_str,target_addr_str,rec);
+                string_free(rec->source_dir);
+                string_free(rec->target_dir);
+                string_free(rec->file);
+                free(rec);
+                close(sourcefd);
+                close(targetfd);
+                continue;
+            }
+            if (first=='-') {
+                printf("Error from client\n");//
             }
             else {
                 char buffer[BUFFSIZE];
@@ -568,7 +579,7 @@ void *worker_thread(void *args) {
                     write(targetfd,nread_str,strlen(nread_str));
                     if (nread>0) {
                         write(targetfd," ",1);
-                        if (write(targetfd,buffer,nread)<1) {
+                        if (write(targetfd,buffer,nread)<nread) {
                             error=errno;
                             printf("write fail %d\n",error);//
                             break;
