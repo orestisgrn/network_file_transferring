@@ -216,21 +216,8 @@ void pull(const char *path,int fd) {
     write(fd,filesize_str,strlen(filesize_str));
     int nread;
     char buffer[BUFFSIZE];
-    for (int bytes_sent=0;(nread=read(file,buffer,BUFFSIZE))>0;bytes_sent=0) {
-        while (bytes_sent<nread) {
-            int nwrite;
-            if ((nwrite=write(fd,buffer,nread))<nread) {
-                error=errno;//
-                printf("write error %d %d\n",error,nwrite);//
-                if (nwrite==-1) {//
-                    close(file);
-                    return;
-                }
-            }
-            //printf("%d\n",nread);
-            bytes_sent+=nwrite;
-        }
-    }
+    while ((nread=read(file,buffer,BUFFSIZE))>0)
+        write(fd,buffer,nread);
     close(file);
 }
 
