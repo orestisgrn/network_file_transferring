@@ -262,7 +262,6 @@ int read_config(FILE *config_file) {
             source_port==-1 || target_port==-1 || 
             inet_aton(string_ptr(source_addr_str),&rec->sock_tuple[SOURCE].sin_addr)==0 ||
             inet_aton(string_ptr(target_addr_str),&rec->sock_tuple[TARGET].sin_addr)==0) {
-            printf("Skipped %s\n",string_ptr(source_dir));//
             string_free(source_dir);
             string_free(source_addr_str);
             string_free(target_dir);
@@ -277,9 +276,6 @@ int read_config(FILE *config_file) {
         rec->source_dir=source_dir;
         rec->target_dir=target_dir;
         rec->file=NULL;
-        /*                              */
-        printf("%s@%s:%d -> %s@%s:%d\n",string_ptr(source_dir),string_ptr(source_addr_str),source_port,
-                                        string_ptr(target_dir),string_ptr(target_addr_str),target_port);//
         buffer_queue_push(producers_queue,rec);
         string_free(source_addr_str);
         string_free(target_addr_str);
@@ -366,14 +362,13 @@ void *get_file_list(void *args) {
     while ((rec=buffer_queue_pop(producers_queue))!=NULL) {
         int sockfd=socket(AF_INET,SOCK_STREAM,0);
         if (sockfd==-1) {
-            perror("Socket couldn't be created\n");//
+            perror("Socket couldn't be created\n");
             string_free(rec->source_dir);
             string_free(rec->target_dir);
             free(rec);
-            return NULL;    // think about how to handle errors
+            return NULL;
         }       // think about using non-blocking connect
         if (connect(sockfd,(struct sockaddr *) &rec->sock_tuple[SOURCE],sizeof(rec->sock_tuple[SOURCE]))==-1) {
-            perror("Connection couldn't be made\n");//
             string_free(rec->source_dir);
             string_free(rec->target_dir);
             free(rec);
@@ -441,12 +436,29 @@ void *get_file_list(void *args) {
                 free(rec);
                 return NULL;
             }
+            char time_str[30];
+            time_t t = time(NULL);
+            strftime(time_str,30,"%Y-%m-%d %H:%M:%S",localtime(&t));
+            char source_addr_str[INET_ADDRSTRLEN];
+            char target_addr_str[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET,&rec->sock_tuple[SOURCE].sin_addr,source_addr_str,INET_ADDRSTRLEN);
+            inet_ntop(AF_INET,&rec->sock_tuple[TARGET].sin_addr,target_addr_str,INET_ADDRSTRLEN);
+            printf("[%s] Added file: %s/%s@%s:%d ->\n%s/%s@%s:%d\n",    // no synchro (but seems to work)
+                time_str,string_ptr(rec->source_dir),string_ptr(file),
+                source_addr_str,ntohs(rec->sock_tuple[SOURCE].sin_port),
+                string_ptr(rec->target_dir),string_ptr(file),
+                target_addr_str,ntohs(rec->sock_tuple[TARGET].sin_port) );
+            fprintf(log_file,"[%s] Added file: %s/%s@%s:%d ->\n%s/%s@%s:%d\n",
+                time_str,string_ptr(rec->source_dir),string_ptr(file),
+                source_addr_str,ntohs(rec->sock_tuple[SOURCE].sin_port),
+                string_ptr(rec->target_dir),string_ptr(file),
+                target_addr_str,ntohs(rec->sock_tuple[TARGET].sin_port) );
             buffer_queue_push(work_queue,file_rec);
         }
         string_free(rec->source_dir);
         string_free(rec->target_dir);
         close(sockfd);
-        free(rec);//
+        free(rec);
     }
     return NULL;
 }
@@ -457,15 +469,14 @@ void *worker_thread(void *args) {
     while ((rec=buffer_queue_pop(work_queue))!=NULL) {
         int sourcefd=socket(AF_INET,SOCK_STREAM,0);
         if (sourcefd==-1) {
-            perror("Socket couldn't be created\n");// use strerror
+            perror("Socket couldn't be created\n");
             string_free(rec->source_dir);
             string_free(rec->target_dir);
             string_free(rec->file);
             free(rec);
-            return NULL;    // think about how to handle errors
+            return NULL;
         }       // think about using non-blocking connect
         if (connect(sourcefd,(struct sockaddr *) &rec->sock_tuple[SOURCE],sizeof(rec->sock_tuple[SOURCE]))==-1) {
-            perror("Connection couldn't be made\n");//
             string_free(rec->source_dir);
             string_free(rec->target_dir);
             string_free(rec->file);
@@ -475,7 +486,7 @@ void *worker_thread(void *args) {
         }
         int targetfd=socket(AF_INET,SOCK_STREAM,0);
         if (targetfd==-1) {
-            perror("Socket couldn't be created\n");//
+            perror("Socket couldn't be created\n");
             string_free(rec->source_dir);
             string_free(rec->target_dir);
             string_free(rec->file);
@@ -484,7 +495,6 @@ void *worker_thread(void *args) {
             return NULL;
         }
         if (connect(targetfd,(struct sockaddr *) &rec->sock_tuple[TARGET],sizeof(rec->sock_tuple[TARGET]))==-1) {
-            perror("Connection couldn't be made\n");//
             string_free(rec->source_dir);
             string_free(rec->target_dir);
             string_free(rec->file);
@@ -586,6 +596,8 @@ void terminate_threads(void) {
         pthread_join(workers[i],NULL);
     }
 }
+
+/*   Console command handling   */
 
 int separate_destination_args(String argv,String *path,String *ip_addr,String *port_str);
 int handle_cmd(String argv);
