@@ -11,10 +11,10 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <signal.h>
+#include <ctype.h>
 #include "utils.h"
 #include "string.h"
-
-#include <signal.h>
 
 int retval;
 
@@ -117,6 +117,7 @@ int bind_socket(int sock,int32_t addr,uint16_t port) {
 
 void list(const char *path,int fd);
 void pull(const char *path,int fd);
+void push(const char *path,int fd);
 
 void *connection_thread(void *void_fd) {
     int *fd = void_fd;
@@ -130,6 +131,7 @@ void *connection_thread(void *void_fd) {
     while(1) {
         if (read(*fd,&ch,sizeof(ch))<1) {
             string_free(msg);
+            close(*fd);
             free(fd);
             return NULL;
         }
@@ -138,12 +140,14 @@ void *connection_thread(void *void_fd) {
         if (string_push(msg,ch)==-1) {
             perror("Memory allocation error\n");
             string_free(msg);
+            close(*fd);
             free(fd);
             return NULL;
         }
     }
     if ((string_length(msg)<=5) || (string_pos(msg,5)!='/')) {   // maybe too much checking...
         string_free(msg);
+        close(*fd);
         free(fd);
         return NULL;
     }
@@ -152,7 +156,7 @@ void *connection_thread(void *void_fd) {
         list(path,*fd);
     }
     else if (strncmp(string_ptr(msg),"PUSH",4)==0) {
-        printf("%s\n",string_ptr(msg)); // no synchro
+        push(path,*fd);
     }
     else if (strncmp(string_ptr(msg),"PULL",4)==0) {
         pull(path,*fd);
@@ -212,7 +216,76 @@ void pull(const char *path,int fd) {
     write(fd,filesize_str,strlen(filesize_str));
     int nread;
     char buffer[BUFFSIZE];
-    while ((nread=read(file,buffer,BUFFSIZE))>0)
-        write(fd,buffer,nread);
+    for (int bytes_sent=0;(nread=read(file,buffer,BUFFSIZE))>0;bytes_sent=0) {
+        while (bytes_sent<nread) {
+            int nwrite;
+            if ((nwrite=write(fd,buffer,nread))<nread) {
+                error=errno;//
+                printf("write error %d %d\n",error,nwrite);//
+                if (nwrite==-1) {//
+                    close(file);
+                    return;
+                }
+            }
+            //printf("%d\n",nread);
+            bytes_sent+=nwrite;
+        }
+    }
     close(file);
+}
+
+void push(const char *path,int fd) {
+    int file;
+    char ch;
+    do {
+        if (read(fd,&ch,1)<1) // reads -1'\n'
+            return;
+    } while(ch!='\n');
+    if ((file=open(path,O_WRONLY | O_CREAT | O_TRUNC,0644))==-1)
+        return;
+    int msg_size;
+    do {
+        do {
+            if (read(fd,&ch,1)<1) // reads PUSH message
+                return;
+        } while(ch!='\n');
+        String msg_size_str = string_create(5);
+        if (msg_size_str==NULL) {
+            perror("Memory allocation error\n");// no synchro
+            return;
+        }
+        while(1) {
+            if (read(fd,&ch,sizeof(ch))<1) {
+                string_free(msg_size_str);
+                return;
+            }
+            if (isspace(ch))
+                break;
+            if (string_push(msg_size_str,ch)==-1) {
+                perror("Memory allocation error\n");
+                string_free(msg_size_str);
+                return;
+            }
+        }
+        sscanf(string_ptr(msg_size_str),"%d",&msg_size);
+        string_free(msg_size_str);
+        char *buffer=malloc(msg_size*sizeof(char));
+        if (buffer==NULL) {
+            perror("Memory allocation error\n");
+            return;
+        }
+        char *buff_ptr=buffer;
+        int bytes_read=0;
+        while(1) {
+            int nread=read(fd,buff_ptr,msg_size-bytes_read);
+            if (nread==-1)
+                break;
+            bytes_read+=nread;
+            buff_ptr+=nread;
+            if (nread==0 || bytes_read==msg_size)
+                break;
+        }
+        write(file,buffer,msg_size);
+        free(buffer);
+    } while(msg_size!=0);
 }

@@ -27,8 +27,9 @@ enum cmd_codes {
     free(workers); \
     free(file_producers); \
     if (config_file != NULL) fclose(config_file); \
+    if (log_file != NULL) fclose(log_file); \
     PRINT_CMD; \
     RETURN_CMD; \
 }
 
-#define BUFFSIZE 10
+#define BUFFSIZE 100

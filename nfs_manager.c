@@ -10,6 +10,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <string.h>
+#include <signal.h>
 #include "utils.h"
 #include "buffer_queue.h"
 #include "string.h"
@@ -27,6 +28,8 @@ int console_fd;
 Buffer_Queue work_queue;
 Buffer_Queue producers_queue;
 
+FILE *log_file=NULL;
+
 int read_config(FILE *config_file);
 
 int bind_socket(int sock,int32_t addr,uint16_t port);
@@ -40,6 +43,7 @@ int process_command(String cmd,char *cmd_code);
 void terminate_threads(void);
 
 int main(int argc,char **argv) {
+    signal(SIGPIPE,SIG_IGN);
     char opt = '\0';
     char *logname = NULL;
     char *config = NULL;
@@ -98,6 +102,9 @@ int main(int argc,char **argv) {
     }
     if (logname==NULL) {
         CLEAN_AND_EXIT(perror("No logfile given\n"),return ARGS_ERR);
+    }
+    if ((log_file=fopen(logname,"a"))==NULL) {
+        CLEAN_AND_EXIT(perror("Logfile couldn't open\n"),return FOPEN_ERR);
     }
     if (buffer_size==0) {
         CLEAN_AND_EXIT(perror("No buffer size given\n"),return ARGS_ERR);
@@ -377,6 +384,7 @@ void *get_file_list(void *args) {
         write(sockfd,string_ptr(rec->source_dir),string_length(rec->source_dir));
         write(sockfd,"\n",1);
         String file;
+        int disconnected=0;
         while(1) {
             file=string_create(10);
             if (file==NULL) {
@@ -389,11 +397,8 @@ void *get_file_list(void *args) {
             while(1) {
                 char ch;
                 if (read(sockfd,&ch,1)<1) {
-                    string_free(rec->source_dir);
-                    string_free(rec->target_dir);
-                    string_free(file);
-                    free(rec);
-                    return NULL;
+                    disconnected=1;
+                    break;
                 }
                 if (ch=='\n')
                     break;
@@ -406,7 +411,7 @@ void *get_file_list(void *args) {
                     return NULL;
                 }
             }
-            if (strcmp(string_ptr(file),".")==0) {
+            if (disconnected || (strcmp(string_ptr(file),".")==0)) {
                 string_free(file);
                 break;
             }
@@ -496,7 +501,7 @@ void *worker_thread(void *args) {
         write(sourcefd,"\n",1);
         char push[]="PUSH ";
         int nread;
-        char nread_str[20] = "-1";
+        char nread_str[20];
         char ch,first;
         int code,error;
         if ((code=read(sourcefd,&ch,sizeof(char)))==-1) {
@@ -519,19 +524,42 @@ void *worker_thread(void *args) {
             }
             else {
                 char buffer[BUFFSIZE];
-                while(1) {
-                    write(targetfd,push,sizeof(pull)-1);
+                int bytes_read=-1;
+                do {
+                    nread=bytes_read;
+                    write(targetfd,push,sizeof(push)-1);
                     write(targetfd,string_ptr(rec->target_dir),string_length(rec->target_dir));
                     write(targetfd,"/",1);
                     write(targetfd,string_ptr(rec->file),string_length(rec->file));
-                    write(targetfd," ",1);
-                    write(targetfd,nread_str,strlen(nread_str));
-                    write(targetfd," ",1);
-                    nread=read(sourcefd,buffer,sizeof(buffer)); // check here
-                    write(targetfd,buffer,nread);
                     write(targetfd,"\n",1);
-                    break;//
-                }
+                    sprintf(nread_str,"%d",nread);
+                    write(targetfd,nread_str,strlen(nread_str));
+                    if (nread>0) {
+                        write(targetfd," ",1);
+                        if (write(targetfd,buffer,nread)<1) {
+                            error=errno;
+                            printf("write fail %d\n",error);//
+                            break;
+                        }
+                    }
+                    else {
+                        if (write(targetfd,"\n",1)<1) {
+                            error=errno;
+                            printf("write fail %d\n",error);//
+                            break;
+                        }
+                    }
+                    char *buff_ptr=buffer;
+                    bytes_read=0;
+                    while(1) {
+                        int nread=read(sourcefd,buff_ptr,sizeof(buffer)-bytes_read);
+                        //check nread here
+                        bytes_read+=nread;
+                        buff_ptr+=nread;
+                        if (nread==0 || bytes_read==sizeof(buffer))
+                            break;
+                    }
+                } while(nread!=0);
             }
         }
         string_free(rec->source_dir);
