@@ -307,7 +307,7 @@ int read_dest(FILE *config_file,String path,String addr,int32_t *port) {
         if (ch==EOF)
             return EOF;
     }
-    int scan_code=fscanf(config_file,"%d",port);// maybe do it safely with strtol (need to store to string)
+    int scan_code=fscanf(config_file,"%d",port);
     if (scan_code==1)
         return 0;
     if (scan_code==EOF)
@@ -421,7 +421,7 @@ void *get_file_list(void *args) {
                 free(rec);
                 return NULL;
             }
-            file_rec->sock_tuple[SOURCE]=rec->sock_tuple[SOURCE];   // maybe also make it reference
+            file_rec->sock_tuple[SOURCE]=rec->sock_tuple[SOURCE];
             file_rec->sock_tuple[TARGET]=rec->sock_tuple[TARGET];
             file_rec->source_dir=string_create(10);
             file_rec->target_dir=string_create(10);
@@ -465,7 +465,9 @@ void *get_file_list(void *args) {
     return NULL;
 }
 
+void log_print_success(char *cmd,char *cmd_ed,char *source_addr_str,char *target_addr_str,struct work_record *rec,uint64_t bytes);
 void log_print_error(char *cmd,char *source_addr_str,char *target_addr_str,struct work_record *rec);
+void log_print_client_error(String error_msg,char *source_addr_str,char *target_addr_str,struct work_record *rec);
 
 void *worker_thread(void *args) {
     enum {SOURCE,TARGET};
@@ -534,7 +536,6 @@ void *worker_thread(void *args) {
         int nread;
         char nread_str[20];
         char ch;
-        int error;
         if (read(sourcefd,&ch,1)<1) {
             log_print_error("PULL",source_addr_str,target_addr_str,rec);
             string_free(rec->source_dir);
@@ -548,7 +549,30 @@ void *worker_thread(void *args) {
         else {
             int code;
             int first=ch;
+            uint64_t total_pulled=0,total_pushed=0;
+            String expctd_filesize=string_create(10);
+            if (expctd_filesize==NULL) {
+                perror("Memory allocation error\n");
+                string_free(rec->source_dir);
+                string_free(rec->target_dir);
+                string_free(rec->file);
+                free(rec);
+                close(sourcefd);
+                close(targetfd);
+                return NULL;
+            }
             while(ch!=' ') {
+                if (string_push(expctd_filesize,ch)==-1) {
+                    perror("Memory allocation error\n");
+                    string_free(rec->source_dir);
+                    string_free(rec->target_dir);
+                    string_free(rec->file);
+                    free(rec);
+                    close(sourcefd);
+                    close(targetfd);
+                    string_free(expctd_filesize);
+                    return NULL;
+                }
                 if ((code=read(sourcefd,&ch,1))<1)
                     break;
             }
@@ -560,14 +584,78 @@ void *worker_thread(void *args) {
                 free(rec);
                 close(sourcefd);
                 close(targetfd);
+                string_free(expctd_filesize);
                 continue;
             }
             if (first=='-') {
-                printf("Error from client\n");//
+                String error_msg=string_create(10);
+                if (error_msg==NULL) {
+                    perror("Memory allocation error\n");
+                    string_free(rec->source_dir);
+                    string_free(rec->target_dir);
+                    string_free(rec->file);
+                    free(rec);
+                    close(sourcefd);
+                    close(targetfd);
+                    string_free(expctd_filesize);
+                    return NULL;
+                }
+                while ((code=read(sourcefd,&ch,1))==1) {
+                    if (string_push(error_msg,ch)==-1) {
+                        perror("Memory allocation error\n");
+                        string_free(rec->source_dir);
+                        string_free(rec->target_dir);
+                        string_free(rec->file);
+                        free(rec);
+                        close(sourcefd);
+                        close(targetfd);
+                        string_free(expctd_filesize);
+                        string_free(error_msg);
+                        return NULL;
+                    }
+                }
+                if (code==-1) {
+                    log_print_error("PULL",source_addr_str,target_addr_str,rec);
+                    string_free(rec->source_dir);
+                    string_free(rec->target_dir);
+                    string_free(rec->file);
+                    free(rec);
+                    close(sourcefd);
+                    close(targetfd);
+                    string_free(expctd_filesize);
+                    string_free(error_msg);
+                    continue;
+                }
+                else if (code==0) {
+                    log_print_client_error(error_msg,source_addr_str,target_addr_str,rec);
+                    string_free(rec->source_dir);
+                    string_free(rec->target_dir);
+                    string_free(rec->file);
+                    free(rec);
+                    close(sourcefd);
+                    close(targetfd);
+                    string_free(expctd_filesize);
+                    string_free(error_msg);
+                    continue;
+                }
             }
             else {
+                char *wrong_char;
+                uint64_t expctd_filesize_int=strtol(string_ptr(expctd_filesize),&wrong_char,10);
+                if (wrong_char==string_ptr(expctd_filesize)) {
+                    log_print_error("PULL",source_addr_str,target_addr_str,rec);
+                    string_free(rec->source_dir);
+                    string_free(rec->target_dir);
+                    string_free(rec->file);
+                    free(rec);
+                    close(sourcefd);
+                    close(targetfd);
+                    string_free(expctd_filesize);
+                    continue;
+                }
+                string_free(expctd_filesize);
                 char buffer[BUFFSIZE];
-                int bytes_read=-1;
+                int bytes_read=-1;  // bytes read per chunk read
                 do {
                     nread=bytes_read;
                     write(targetfd,push,sizeof(push)-1);
@@ -580,15 +668,14 @@ void *worker_thread(void *args) {
                     if (nread>0) {
                         write(targetfd," ",1);
                         if (write(targetfd,buffer,nread)<nread) {
-                            error=errno;
-                            printf("write fail %d\n",error);//
+                            log_print_error("PUSH",source_addr_str,target_addr_str,rec);
                             break;
                         }
+                        total_pushed+=nread;
                     }
                     else {
                         if (write(targetfd,"\n",1)<1) {
-                            error=errno;
-                            printf("write fail %d\n",error);//
+                            log_print_error("PUSH",source_addr_str,target_addr_str,rec);
                             break;
                         }
                     }
@@ -602,7 +689,14 @@ void *worker_thread(void *args) {
                         if (nread==0 || bytes_read==sizeof(buffer))
                             break;
                     }
+                    total_pulled+=bytes_read;
                 } while(nread!=0);
+                if (expctd_filesize_int==total_pulled) {
+                    log_print_success("PULL","pulled",source_addr_str,target_addr_str,rec,total_pulled);
+                }
+                if (expctd_filesize_int==total_pushed) {
+                    log_print_success("PUSH","pushed",source_addr_str,target_addr_str,rec,total_pushed);
+                }
             }
         }
         string_free(rec->source_dir);
@@ -923,4 +1017,32 @@ void log_print_error(char *cmd,char *source_addr_str,char *target_addr_str,struc
         target_addr_str,ntohs(rec->sock_tuple[TARGET].sin_port),
         pthread_self(),cmd,string_ptr(rec->file),error_str);
     pthread_mutex_unlock(&strerror_mtx);
+}
+
+void log_print_client_error(String error_msg,char *source_addr_str,char *target_addr_str,struct work_record *rec) {
+    enum {SOURCE,TARGET};
+    char time_str[30];
+    time_t t = time(NULL);
+    strftime(time_str,30,"%Y-%m-%d %H:%M:%S",localtime(&t));
+    fprintf(log_file,"[%s] [%s/%s@%s:%d] [%s/%s@%s:%d]\n"
+        "[%ld] [%s] [ERROR] [File: %s - %s]\n",
+        time_str,string_ptr(rec->source_dir),string_ptr(rec->file),
+        source_addr_str,ntohs(rec->sock_tuple[SOURCE].sin_port),
+        string_ptr(rec->target_dir),string_ptr(rec->file), 
+        target_addr_str,ntohs(rec->sock_tuple[TARGET].sin_port),
+        pthread_self(),"PULL",string_ptr(rec->file),string_ptr(error_msg));
+}
+
+void log_print_success(char *cmd,char *cmd_ed,char *source_addr_str,char *target_addr_str,struct work_record *rec,uint64_t bytes) {
+    enum {SOURCE,TARGET};
+    char time_str[30];
+    time_t t = time(NULL);
+    strftime(time_str,30,"%Y-%m-%d %H:%M:%S",localtime(&t));
+    fprintf(log_file,"[%s] [%s/%s@%s:%d] [%s/%s@%s:%d]\n"
+        "[%ld] [%s] [SUCCESS] [%lu bytes %s]\n",
+        time_str,string_ptr(rec->source_dir),string_ptr(rec->file),
+        source_addr_str,ntohs(rec->sock_tuple[SOURCE].sin_port),
+        string_ptr(rec->target_dir),string_ptr(rec->file), 
+        target_addr_str,ntohs(rec->sock_tuple[TARGET].sin_port),
+        pthread_self(),cmd,bytes,cmd_ed);
 }
