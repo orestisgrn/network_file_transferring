@@ -14,3 +14,36 @@ nfs_client.c              : Η main του εκτελέσιμου nfs_client
 utils.h                   : Χρήσιμα enums, macros, και ορισμοί που χρησιμοποιούνται σε πολλαπλά αρχεία
 buffer_queue.c/.h         : Δομή ουράς υλοποιημένη ως κυκλικό array
 string.c/.h               : Δυναμικά strings
+
+
+Λειτουργία του προγράμματος:
+
+
+nfs_manager: Το πρόγραμμα αρχικά αρχικοποιεί τις διάφορες δομές δεδομένων που χρησιμοποιεί και έπειτα διαβάζει τις εγγραφές
+             του config file. Οι κυριότερες δομές είναι τα worker_queue, worker_thread_pool, και τα producer_queue,
+             producer_thread_pool. Τα worker_queue/producer_queue είναι δομές τύπου Buffer_Queue (buffer_queue.c/.h),
+             που υλοποιούν ουρές μέσω κυκλικού array. Οι εγγραφές του config file "πακετάρονται" σε μια δομή work_record
+             (ορίζεται στο buffer_queue.h), και αποθηκεύονται producer_queue. Τα producer threads του pool περιμένουν να
+             κάνουν pop κάποιο work_record από την ουρά, για να αποστείλουν εντολή LIST για την παραλαβή των ονομάτων αρχείων.
+             Για κάθε όνομα αρχείο που λαμβάνουν, δημιουργούν ένα work_record, το οποίο αυτή τη φορά αποθηκεύεται στο
+             worker_queue, και αναπαριστά μια εργασία συγχρονισμού. Ανάλογα με τους producers, οι workers περιμένουν και
+             αυτοί να λάβουν εργασίες συγχρονισμού.
+
+             Όλη η διαδικασία ανάγνωσης και προσθήκης των directories στο producer_queue γίνεται στο main thread (συνάρτηση 
+             read_config), οπότε η μέχρι να προστεθεί και το τελευταίο directory στο producers_queue, δεν γίνεται σύνδεση
+             και ανάγνωση εντολών από το console.
+
+             Μόλις γίνει η σύνδεση στο console μετά την ανάγνωση του config, ο manager μπορεί να λάβει εντολές. Αν και
+             οι εντολές add/cancel αναγνωρίζονται, δεν έχει γίνει υλοποίηση τους στον manager (συγκεκριμένα, εάν δωθεί
+             κάποια από αυτές τις εντολές, θα επιστραφεί εάν μύνημα "Got that add/cancel" που υποδηλώνει ότι η εντολή
+             αναγνωρίζεται. Επιπλέον η cancel αναγνωρίζεται μόνο με όρισμα της μορφής dir@ip:port και όχι σκέτο το dir). 
+             Όταν ληφθεί η εντολή shutdown από το console, ο manager τερματίζει, αφού συλλέξει όλα τα threads των thread pool
+             με την συνάρτηση terminate_threads, η οποία προσθέτει στα worker/producer queues εάν NULL στοιχείο, το οποίο
+             δουλεύει ως poison pill, δηλαδή μόλις ληφθεί από κάποιο thread, το thread τερματίζει.
+
+             Το format με το οποίο επικοινωνούνε το console και ο manager φαίνεται στον κώδικα
+             και στα comments του nfs_console.c.
+
+nfs_client:  Ο nfs_client δουλεύει εκτελώντας ένα loop, που συνεχώς περιμένει νέες συνδέσεις μέσω της accept. Μολίς γίνει μία
+             σύνδεση, δημιουργεί ένα connection_thread, το όποιο γίνεται detached. Το connection_thread διαβάζει από το file
+             descriptor της σύνδεσης που δέχεται ως όρισμα, και εκτελεί τις εντολές LIST/PULL/PUSH που λαμβάνει.

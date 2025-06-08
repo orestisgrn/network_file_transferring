@@ -858,7 +858,7 @@ int process_command(String cmd,char *cmd_code) {           // Command ends in \n
             else if (argc==2) {
                 String path;
                 String ip_addr;
-                String port_str;
+                String port_str;    // this function separates the argument to path,ip,port
                 int code=separate_destination_args(argv,&path,&ip_addr,&port_str);
                 if (code==ALLOC_ERR) {
                     string_free(path);
