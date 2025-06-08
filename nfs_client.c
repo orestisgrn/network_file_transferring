@@ -83,8 +83,11 @@ int main(int argc, char **argv) {
         return LISTEN_ERR;
     }
     int *fd;
-    struct sockaddr_in manager;//
-    socklen_t managerlen=sizeof(manager);//
+    struct sockaddr_in manager;
+    socklen_t managerlen=sizeof(manager);
+    /*              Main client loop:                   */
+    /*       waits on accept for connections,           */
+    /*  then it creates a thread to handle connection   */
     while (1) {
         if ((fd=malloc(sizeof(int)))==NULL) {
             perror("Memory allocation error\n");    // Think about printing this...
@@ -96,14 +99,14 @@ int main(int argc, char **argv) {
             retval=ACCEPT_ERR;
             pthread_exit(&retval);
         }
-        printf("%s %d\n",inet_ntoa(manager.sin_addr),ntohs(manager.sin_port));// no synchro
+        printf("%s %d\n",inet_ntoa(manager.sin_addr),ntohs(manager.sin_port));//
         pthread_t thr;
         if (pthread_create(&thr,NULL,connection_thread,fd)!=0) {
             perror("Thread couldn't be created\n");
             retval=PTHREAD_ERR;
             pthread_exit(&retval);
         }
-        printf("Created thread\n");// no synchro
+        printf("Created thread\n");//
         if (pthread_detach(thr)!=0) {
             perror("Thread couldn't be detached\n");
             retval=PTHREAD_ERR;
@@ -133,7 +136,7 @@ void *connection_thread(void *void_fd) {
         free(fd);
         return NULL;   // Think about how to handle in-thread errors
     }
-    while(1) {
+    while(1) {      // Read and store message to string. Each message ends in \n.
         if (read(*fd,&ch,sizeof(ch))<1) {
             string_free(msg);
             close(*fd);
@@ -149,23 +152,20 @@ void *connection_thread(void *void_fd) {
             free(fd);
             return NULL;
         }
-    }
-    if ((string_length(msg)<=5) || (string_pos(msg,5)!='/')) {   // maybe too much checking...
+    }   // Messages are in the form of: PULL/PUSH/LIST dir_path (dir_path should start with /)
+    if ((string_length(msg)<=5) || (string_pos(msg,5)!='/')) {
         string_free(msg);
         close(*fd);
         free(fd);
         return NULL;
     }
     const char *path=string_ptr(msg)+6;
-    if (strncmp(string_ptr(msg),"LIST",4)==0) {
+    if (strncmp(string_ptr(msg),"LIST",4)==0)
         list(path,*fd);
-    }
-    else if (strncmp(string_ptr(msg),"PUSH",4)==0) {
+    else if (strncmp(string_ptr(msg),"PUSH",4)==0)
         push(path,*fd);
-    }
-    else if (strncmp(string_ptr(msg),"PULL",4)==0) {
+    else if (strncmp(string_ptr(msg),"PULL",4)==0)
         pull(path,*fd);
-    }
     else
         printf("Invalid command\n"); // no synchro
     string_free(msg);
@@ -176,16 +176,17 @@ void *connection_thread(void *void_fd) {
 
 void list(const char *path,int fd) {
     DIR *dir_ptr=opendir(path);         // iterate through files
-    printf("%s\n",path);
+    printf("%s\n",path);//
     if (dir_ptr!=NULL) {
         struct dirent *direntp;
         int dir_fd = dirfd(dir_ptr);
         pthread_mutex_lock(&readdir_mtx);
         while ((direntp=readdir(dir_ptr))!=NULL) {
             pthread_mutex_unlock(&readdir_mtx);
-            struct stat st;             // doesn't check if file is accessible
+            struct stat st;
             fstatat(dir_fd,direntp->d_name,&st,0);
             if (S_ISREG(st.st_mode)) {
+                // print each file line by line, and end with .\n at the end of the iteration 
                 write(fd,direntp->d_name,strlen(direntp->d_name));
                 write(fd,"\n",1);
             }
@@ -197,7 +198,7 @@ void list(const char *path,int fd) {
     closedir(dir_ptr);
 }
 
-void pull(const char *path,int fd) {
+void pull(const char *path,int fd) {    // send as followed by the given format
     int file,error;
     static char minus_one[]="-1 ";
     if ((file=open(path,O_RDONLY))==-1) {
@@ -239,6 +240,7 @@ void pull(const char *path,int fd) {
     close(file);
 }
 
+/*   push messages are in the form of: PUSH dir_path'\n'chunk_size data  (no '\n' after data)  */
 void push(const char *path,int fd) {
     int file;
     char ch;
@@ -272,8 +274,10 @@ void push(const char *path,int fd) {
                 return;
             }
         }
-        sscanf(string_ptr(msg_size_str),"%d",&msg_size);
+        int converted=sscanf(string_ptr(msg_size_str),"%d",&msg_size);
         string_free(msg_size_str);
+        if (converted<1)
+            return;
         char *buffer=malloc(msg_size*sizeof(char));
         if (buffer==NULL) {
             perror("Memory allocation error\n");
