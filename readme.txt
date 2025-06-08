@@ -58,4 +58,4 @@ nfs_client:  Ο nfs_client δουλεύει εκτελώντας ένα loop, π
              Τα producer_thread_pool και producer_queue έχουν μέγεθος ίσο με το αντίστοιχο των workers δια δύο, με στρογγυλοποίηση προς
              τα πάνω.
 
-             Τα directories που δίνονται για παρακολούθηση, καθώς και τα target directories τους θα πρέπει να υπάρχουν εκ των προτέρων.
+             Τα directories που δίνονται για συγχρονισμό, καθώς και τα target directories τους θα πρέπει να υπάρχουν εκ των προτέρων.
