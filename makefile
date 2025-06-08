@@ -41,15 +41,3 @@ clean:
 
 count:
 	wc $(SOURCE) $(HEADER)
-
-
-# debug tools
-
-client_big_trial:
-	valgrind --leak-check=full --show-leak-kinds=all ./nfs_client -p 60000
-
-manager_big_trial_val:
-	valgrind --leak-check=full --show-leak-kinds=all ./nfs_manager -l manager_log.txt -b 5 -p 50000 -c big_trial.txt
-
-manager_big_trial:
-	./nfs_manager -l manager_log.txt -b 5 -p 50000 -c big_trial.txt

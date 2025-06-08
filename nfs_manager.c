@@ -16,7 +16,7 @@
 #include "string.h"
 
 int worker_num = 5;
-pthread_t *workers;
+pthread_t *workers;         // threads are stored here
 pthread_t *file_producers;
 
 #define FILE_PRODUCER_NUM ((worker_num+1)/2)
