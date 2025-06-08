@@ -161,14 +161,15 @@ int main(int argc,char **argv) {
         if ((config_file=fopen(config,"r"))==NULL) {
             CLEAN_AND_EXIT(perror("Config file couldn't open\n"),return FOPEN_ERR);
         }
-        int code;/*   read_config reads config and also inserts its records on sync_info_mem_store   */
-        if ((code=read_config(config_file))!=0) {   // maybe execute this in a thread
+        int code;/*   read_config reads config and also inserts its records on producers_queue   */
+        if ((code=read_config(config_file))!=0) {
             CLEAN_AND_EXIT(perror("Error while reading config file\n"),return code);
         }
     }
     console_fd=accept(console_sock,NULL,NULL);
     int retval;
     if (console_fd!=-1) {
+        /*   read_command reads commands from console, and returns either on shutdown or error  */
         retval = read_commands();
         if (retval==0) {
             time_t t = time(NULL);
@@ -207,6 +208,7 @@ int read_dest(FILE *config_file,String path,String addr,int32_t *port);
 int read_config(FILE *config_file) {
     String source_dir,target_dir,source_addr_str,target_addr_str;
     int32_t source_port,target_port;
+    // loop reads tuples of directory/ip/port with read_dest, and then insert a work_record on producers queue
     do {
         if ((source_dir=string_create(10))==NULL)
             return ALLOC_ERR;
@@ -316,6 +318,7 @@ int read_dest(FILE *config_file,String path,String addr,int32_t *port) {
     return 0;
 }
 
+/*   read_command reads each command ending with \n from console, and sends it to process_command to execute  */
 int read_commands(void) {
     char ch;
     while(1) {
@@ -359,6 +362,7 @@ int bind_socket(int sock,int32_t addr,uint16_t port) {
     return bind(sock,(struct sockaddr *) &str,sizeof(str));
 }
 
+/*   producer thread function   */
 void *get_file_list(void *args) {
     enum {SOURCE,TARGET};
     struct work_record *rec;
@@ -369,7 +373,7 @@ void *get_file_list(void *args) {
             string_free(rec->target_dir);
             free(rec);
             return NULL;
-        }       // think about using non-blocking connect
+        }
         if (connect(sockfd,(struct sockaddr *) &rec->sock_tuple[SOURCE],sizeof(rec->sock_tuple[SOURCE]))==-1) {
             string_free(rec->source_dir);
             string_free(rec->target_dir);
@@ -382,6 +386,7 @@ void *get_file_list(void *args) {
         write(sockfd,"\n",1);
         String file;
         int disconnected=0;
+        //   loop reads and stores each file, then creates a work_record to insert to work_queue 
         while(1) {
             file=string_create(10);
             if (file==NULL) {
@@ -445,7 +450,7 @@ void *get_file_list(void *args) {
             char target_addr_str[INET_ADDRSTRLEN];
             inet_ntop(AF_INET,&rec->sock_tuple[SOURCE].sin_addr,source_addr_str,INET_ADDRSTRLEN);
             inet_ntop(AF_INET,&rec->sock_tuple[TARGET].sin_addr,target_addr_str,INET_ADDRSTRLEN);
-            printf("[%s] Added file: %s/%s@%s:%d ->\n%s/%s@%s:%d\n",    // no synchro (but seems to work)
+            printf("[%s] Added file: %s/%s@%s:%d ->\n%s/%s@%s:%d\n",
                 time_str,string_ptr(rec->source_dir),string_ptr(file),
                 source_addr_str,ntohs(rec->sock_tuple[SOURCE].sin_port),
                 string_ptr(rec->target_dir),string_ptr(file),
@@ -465,10 +470,12 @@ void *get_file_list(void *args) {
     return NULL;
 }
 
+/*   These function print log messages   */
 void log_print_success(char *cmd,char *cmd_ed,char *source_addr_str,char *target_addr_str,struct work_record *rec,uint64_t bytes);
 void log_print_error(char *cmd,char *source_addr_str,char *target_addr_str,struct work_record *rec);
 void log_print_client_error(String error_msg,char *source_addr_str,char *target_addr_str,struct work_record *rec);
 
+/*   worker thread function   */
 void *worker_thread(void *args) {
     enum {SOURCE,TARGET};
     struct work_record *rec;
@@ -487,7 +494,7 @@ void *worker_thread(void *args) {
             string_free(rec->file);
             free(rec);
             continue;
-        }       // think about using non-blocking connect
+        }
         if (connect(sourcefd,(struct sockaddr *) &rec->sock_tuple[SOURCE],sizeof(rec->sock_tuple[SOURCE]))==-1) {
             log_print_error("PULL",source_addr_str,target_addr_str,rec);
             string_free(rec->source_dir);
@@ -547,6 +554,7 @@ void *worker_thread(void *args) {
             continue;
         }
         else {
+            // if PULL message was received fine, read the expected file size and proceed with fetching the data
             int code;
             int first=ch;
             uint64_t total_pulled=0,total_pushed=0;
@@ -586,7 +594,7 @@ void *worker_thread(void *args) {
                 close(targetfd);
                 string_free(expctd_filesize);
                 continue;
-            }
+            }// if first character was '-' (aka -1), fetch the error message following
             if (first=='-') {
                 String error_msg=string_create(10);
                 if (error_msg==NULL) {
@@ -657,6 +665,7 @@ void *worker_thread(void *args) {
                 char buffer[BUFFSIZE];
                 int bytes_read=-1;  // bytes read per chunk read
                 do {
+                    // push messages are in the form of: PUSH dir_path'\n'chunk_size data  (no '\n' after data)
                     nread=bytes_read;
                     write(targetfd,push,sizeof(push)-1);
                     write(targetfd,string_ptr(rec->target_dir),string_length(rec->target_dir));

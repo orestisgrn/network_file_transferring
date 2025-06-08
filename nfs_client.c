@@ -90,7 +90,7 @@ int main(int argc, char **argv) {
     /*  then it creates a thread to handle connection   */
     while (1) {
         if ((fd=malloc(sizeof(int)))==NULL) {
-            perror("Memory allocation error\n");    // Think about printing this...
+            perror("Memory allocation error\n");
             retval=ALLOC_ERR;
             pthread_exit(&retval);
         }
@@ -99,14 +99,12 @@ int main(int argc, char **argv) {
             retval=ACCEPT_ERR;
             pthread_exit(&retval);
         }
-        printf("%s %d\n",inet_ntoa(manager.sin_addr),ntohs(manager.sin_port));//
         pthread_t thr;
         if (pthread_create(&thr,NULL,connection_thread,fd)!=0) {
             perror("Thread couldn't be created\n");
             retval=PTHREAD_ERR;
             pthread_exit(&retval);
         }
-        printf("Created thread\n");//
         if (pthread_detach(thr)!=0) {
             perror("Thread couldn't be detached\n");
             retval=PTHREAD_ERR;
@@ -132,9 +130,9 @@ void *connection_thread(void *void_fd) {
     char ch;
     String msg = string_create(15);
     if (msg==NULL) {
-        perror("Memory allocation error\n");// no synchro
+        perror("Memory allocation error\n");
         free(fd);
-        return NULL;   // Think about how to handle in-thread errors
+        return NULL;
     }
     while(1) {      // Read and store message to string. Each message ends in \n.
         if (read(*fd,&ch,sizeof(ch))<1) {
@@ -167,7 +165,7 @@ void *connection_thread(void *void_fd) {
     else if (strncmp(string_ptr(msg),"PULL",4)==0)
         pull(path,*fd);
     else
-        printf("Invalid command\n"); // no synchro
+        printf("Invalid command\n");
     string_free(msg);
     close(*fd);
     free(fd);
@@ -176,7 +174,6 @@ void *connection_thread(void *void_fd) {
 
 void list(const char *path,int fd) {
     DIR *dir_ptr=opendir(path);         // iterate through files
-    printf("%s\n",path);//
     if (dir_ptr!=NULL) {
         struct dirent *direntp;
         int dir_fd = dirfd(dir_ptr);
@@ -258,7 +255,7 @@ void push(const char *path,int fd) {
         } while(ch!='\n');
         String msg_size_str = string_create(5);
         if (msg_size_str==NULL) {
-            perror("Memory allocation error\n");// no synchro
+            perror("Memory allocation error\n");
             return;
         }
         while(1) {

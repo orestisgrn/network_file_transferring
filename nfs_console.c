@@ -23,7 +23,7 @@ int main(int argc, char **argv) {
     char *logname=NULL;
     char *ip_str=NULL;
     int32_t port_number = -1;
-    while (*(++argv) != NULL) {
+    while (*(++argv) != NULL) {                 // Command line arguments handle
         if ((opt == 0) && ((*argv)[0] == '-')) {
             opt = (*argv)[1];
         }
@@ -112,7 +112,7 @@ int main(int argc, char **argv) {
         }
         int wrote_char=0;
         printf("> ");
-        do {
+        do {    // read and store command in this loop
             ch = getchar();
             if (ch==EOF) {
                 string_free(cmd);
